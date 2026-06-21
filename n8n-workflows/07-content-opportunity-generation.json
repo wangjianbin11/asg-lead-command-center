@@ -33,7 +33,7 @@
         0
       ],
       "parameters": {
-        "command": "cd /home/node/asg-lcc && set -a && . ./.env && set +a && python3 scripts/generate_content_opportunities.py"
+        "command": "cd /home/node/.n8n/asg-lcc && set -a && . ./.env && set +a && python3 scripts/generate_content_opportunities.py"
       },
       "notes": "Local script only (no network beyond the configured AI provider). Reads the day's Pain Signal / Evidence Text (Lead Pool) and Message Content / Intent / Urgency (Conversation Log), runs the content-opportunity-extractor-v1 prompt, and prints a JSON object shaped {\"opportunities\":[{pain_point,topic,search_intent,recommended_format[],draft_brief,priority,source_lead_id,source_conversation_id}]}. Validates the schema; on invalid JSON or missing required fields it exits non-zero so the second (error) output fires. $env supplies AI keys and table ids at runtime; the script must never publish or post anything itself."
     },

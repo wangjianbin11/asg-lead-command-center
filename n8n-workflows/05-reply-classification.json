@@ -56,7 +56,7 @@
         110
       ],
       "parameters": {
-        "command": "cd /home/node/asg-lcc && set -a && . ./.env && set +a && python3 scripts/classify_reply.py --json '{\"conversation_id\":\"CONV-20260621-0001\",\"lead_id\":\"LEAD-20260621-0001\",\"contact_id\":\"CT-20260621-0001\",\"channel\":\"Email\",\"direction\":\"Inbound\",\"message_content\":\"Can you send me a fulfillment quote for around 50 orders a day and your custom packaging options?\"}'"
+        "command": "cd /home/node/.n8n/asg-lcc && set -a && . ./.env && set +a && python3 scripts/classify_reply.py --json '{\"conversation_id\":\"CONV-20260621-0001\",\"lead_id\":\"LEAD-20260621-0001\",\"contact_id\":\"CT-20260621-0001\",\"channel\":\"Email\",\"direction\":\"Inbound\",\"message_content\":\"Can you send me a fulfillment quote for around 50 orders a day and your custom packaging options?\"}'"
       },
       "notes": "Local script only (no network). Validates the reply-classifier-v1 JSON schema (intent/urgency/summary/customer_need/recommended_next_action/suggested_reply/should_follow_up/next_followup_days). On invalid JSON or missing fields it exits non-zero so the error branch fires. $env supplies AI keys/table ids; the script must not send anything on its own."
     },

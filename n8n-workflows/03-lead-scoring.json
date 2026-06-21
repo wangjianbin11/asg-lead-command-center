@@ -32,7 +32,7 @@
         0
       ],
       "parameters": {
-        "command": "cd /home/node/asg-lcc && set -a && . ./.env && set +a && python3 scripts/run_lead_pipeline.py --input inbox/leads.csv --write-feishu",
+        "command": "cd /home/node/.n8n/asg-lcc && set -a && . ./.env && set +a && python3 scripts/run_lead_pipeline.py --input inbox/leads.csv --write-feishu",
         "executeOnce": false
       },
       "notes": "Primary path: run_lead_pipeline.py cleans, dedupes, scores (AI when a key is present, else local heuristic with review_needed=true), writes Lead Scoring rows and updates Lead Pool. Single-payload fallback: `python3 scripts/score_leads.py --json '<scoring json>'` validates one AI scoring payload. No secrets on the command line."

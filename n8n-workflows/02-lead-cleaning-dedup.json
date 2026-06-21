@@ -33,7 +33,7 @@
         0
       ],
       "parameters": {
-        "command": "cd /home/node/asg-lcc && set -a && . ./.env && set +a && python3 scripts/dedupe_leads.py inbox/leads.csv",
+        "command": "cd /home/node/.n8n/asg-lcc && set -a && . ./.env && set +a && python3 scripts/dedupe_leads.py inbox/leads.csv",
         "executeOnce": false
       },
       "notes": "Runs scripts/dedupe_leads.py (stdlib only). Outputs one JSON object per row with is_duplicate / duplicate_type / master_lead_id. Never deletes rows; duplicates are only flagged."

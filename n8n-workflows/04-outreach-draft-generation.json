@@ -44,7 +44,7 @@
         0
       ],
       "parameters": {
-        "command": "cd /home/node/asg-lcc && set -a && . ./.env && set +a && python3 scripts/generate_outreach.py --channel Email",
+        "command": "cd /home/node/.n8n/asg-lcc && set -a && . ./.env && set +a && python3 scripts/generate_outreach.py --channel Email",
         "executeOnce": false
       },
       "notes": "Primary path: scripts/generate_outreach.py resolves the channel's prompt path and emits {channel, prompt_path, safety}. For a full per-lead draft build, scripts/run_lead_pipeline.py already calls generate_outreach.build_outreach_task(...) internally for Priority A/B leads with a usable contact, producing an Outreach Task dict (Approval Status=Pending Review, Send Status=Not Sent). Single-payload fallback: `python3 scripts/generate_outreach.py --channel Email` validates the channel/prompt binding. No secrets on the command line; AI key (when configured) is read from env by the script, never passed as an argument."
