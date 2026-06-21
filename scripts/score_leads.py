@@ -42,29 +42,44 @@ _OFFER_ORDER = [
 ]
 
 
-def _canonicalize(value: Any, order: List[str], fallback: str) -> str:
-    """Canonicalize a model-emitted enum value.
+def _try_canonicalize(value: Any, order: List[str], fallback: str):
+    """Non-throwing canonicalizer. Returns ``(value, matched)``.
 
-    - exact (case-insensitive) match        -> that value
-    - non-empty paraphrase ("Shipping Delays") -> first canonical value whose
-      lowercased form is a substring of the input
-    - empty / missing                       -> ``fallback``
-    - non-empty but matches NOTHING         -> raise ValueError (truly bogus)
+    - exact (case-insensitive) match            -> (that value, True)
+    - non-empty paraphrase containing a canonical value as a substring
+                                                  -> (that value, True)
+    - empty / missing                           -> (fallback, True)
+    - non-empty but matches NOTHING             -> (None, False)
 
-    Raising on bogus preserves the strict-rejection contract (bad AI output ->
-    heuristic fallback + human review); the substring branch only rescues
-    recognizable paraphrases so an otherwise-good score is not discarded.
+    The ``(None, False)`` case lets the caller choose a safe default and decide
+    whether to flag human review, instead of forcing a throw. Throwing would
+    discard an otherwise-valid AI score: GLM phrases offers / pain points as
+    free-form synonyms that contain no canonical substring (e.g.
+    "Supplier Comparison & Sourcing Audit" vs canonical "Supplier Switch Audit").
     """
     text = str(value or "").strip().lower()
     if not text:
-        return fallback
+        return fallback, True
     for canonical in order:
         if text == canonical.lower():
-            return canonical
+            return canonical, True
     for canonical in order:
         if canonical.lower() in text:
-            return canonical
-    raise ValueError("unrecognized enum value: %r" % (value,))
+            return canonical, True
+    return None, False
+
+
+def _canonicalize(value: Any, order: List[str], fallback: str) -> str:
+    """Strict canonicalizer: raise on a non-empty value that matches no form.
+
+    Delegates to :func:`_try_canonicalize`. Retained for genuinely strict
+    fields; recommendation-shaped fields (pain point, recommended offer) use the
+    non-throwing helper directly so a single paraphrase never discards a score.
+    """
+    result, matched = _try_canonicalize(value, order, fallback)
+    if not matched and str(value or "").strip():
+        raise ValueError("unrecognized enum value: %r" % (value,))
+    return result
 
 
 def map_score_to_priority(score: int) -> str:
@@ -127,8 +142,26 @@ def validate_scoring_output(payload: Dict[str, Any]) -> Dict[str, Any]:
         normalized["priority_mismatch"] = "expected %s from total_score" % expected_priority
         priority = expected_priority
 
-    main_pain_point = _canonicalize(normalized.get("main_pain_point"), _PAIN_ORDER, "Unknown")
-    recommended_offer = _canonicalize(normalized.get("recommended_offer"), _OFFER_ORDER, "Not Fit")
+    # Pain point and recommended offer are recommendation-shaped fields GLM
+    # phrases freely as synonyms. A non-canonical value must NOT discard the
+    # whole AI score (the prior strict raise silently replaced real GLM scores
+    # with the heuristic whenever GLM phrased an offer/pain point as a synonym
+    # containing no canonical substring). Canonicalize when possible; on a
+    # non-match use a safe default and flag review_needed (spec §0 rule 6/7).
+    main_pain_point, pain_matched = _try_canonicalize(
+        normalized.get("main_pain_point"), _PAIN_ORDER, "Unknown"
+    )
+    if not pain_matched:
+        main_pain_point = "Unknown"
+        normalized["review_needed"] = True
+    recommended_offer, offer_matched = _try_canonicalize(
+        normalized.get("recommended_offer"), _OFFER_ORDER, "Not Fit"
+    )
+    if not offer_matched:
+        # Preserve the model's raw recommendation text (still useful signal)
+        # rather than collapse to "Not Fit", and flag for human review.
+        recommended_offer = str(normalized.get("recommended_offer") or "").strip() or "Not Fit"
+        normalized["review_needed"] = True
     risk = str(normalized.get("risk") or "Medium")
     if risk not in RISKS:
         raise ValueError("risk must be Low/Medium/High")

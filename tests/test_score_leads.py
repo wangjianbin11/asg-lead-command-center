@@ -82,17 +82,40 @@ class ScoreLeadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_scoring_output(payload)
 
-    def test_validate_rejects_invalid_enum_values(self):
-        cases = [
-            ("main_pain_point", "Bogus"),
-            ("recommended_offer", "Bogus Offer"),
-            ("risk", "Critical"),
-        ]
-        for key, value in cases:
-            payload = dict(VALID_PAYLOAD)
-            payload[key] = value
-            with self.assertRaises(ValueError):
-                validate_scoring_output(payload)
+    def test_validate_rejects_invalid_risk(self):
+        # risk is a strict 3-value classification (Low/Medium/High); a truly
+        # invalid value still rejects. main_pain_point / recommended_offer no
+        # longer reject here — see the non-canonical tests below — because a
+        # single paraphrased enum must never discard an otherwise-valid AI
+        # score (the prior behavior silently replaced real GLM scores with the
+        # heuristic whenever GLM phrased an offer/pain point as a synonym).
+        payload = dict(VALID_PAYLOAD)
+        payload["risk"] = "Critical"
+        with self.assertRaises(ValueError):
+            validate_scoring_output(payload)
+
+    def test_noncanonical_recommendation_is_preserved_with_review(self):
+        # GLM phrases offers freely (e.g. "Supplier Comparison & Sourcing Audit"
+        # instead of the canonical "Supplier Switch Audit"). A non-canonical
+        # RECOMMENDATION must never discard the whole AI score: keep the raw
+        # wording and flag review_needed so a human checks it (spec §0 rule 6/7).
+        payload = dict(VALID_PAYLOAD)
+        payload["recommended_offer"] = "Supplier Comparison & Sourcing Audit"
+        normalized = validate_scoring_output(payload)
+        self.assertEqual(normalized["total_score"], 86)
+        self.assertEqual(normalized["priority"], "A")
+        self.assertEqual(normalized["recommended_offer"], "Supplier Comparison & Sourcing Audit")
+        self.assertTrue(normalized["review_needed"])
+
+    def test_noncanonical_pain_point_defaults_unknown_with_review(self):
+        # A pain point GLM phrases as "Logistics" matches no canonical pain
+        # point substring; default to Unknown + review instead of discarding
+        # an otherwise-valid score.
+        payload = dict(VALID_PAYLOAD)
+        payload["main_pain_point"] = "Logistics"
+        normalized = validate_scoring_output(payload)
+        self.assertEqual(normalized["main_pain_point"], "Unknown")
+        self.assertTrue(normalized["review_needed"])
 
     def test_priority_mismatch_forces_review(self):
         # Spec §8.3 acceptance: when AI priority != score-derived priority,
