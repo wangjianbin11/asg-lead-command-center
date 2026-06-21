@@ -39,7 +39,7 @@
         0
       ],
       "parameters": {
-        "command": "python3 scripts/generate_daily_report.py --sample",
+        "command": "cd /home/node/asg-lcc && set -a && . ./.env && set +a && python3 scripts/generate_daily_report.py --sample",
         "executeOnce": false
       },
       "notes": "Primary path: render the boss-readable daily report markdown. Default to --sample for the skeleton (offline, no I/O). For a real run, swap to: python3 scripts/generate_daily_report.py --input data-samples/daily_snapshot.json --date {{$today}}. The script is stdlib-only and never auto-sends outreach; --feishu is an explicit stub that raises ConfigError unless credentials + live table mapping are configured."

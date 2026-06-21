@@ -7,7 +7,10 @@
       "name": "Daily 22:00",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1,
-      "position": [0, 0],
+      "position": [
+        0,
+        0
+      ],
       "parameters": {
         "rule": {
           "interval": [
@@ -25,9 +28,12 @@
       "name": "Generate Content Opportunities",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [260, 0],
+      "position": [
+        260,
+        0
+      ],
       "parameters": {
-        "command": "python3 scripts/generate_content_opportunities.py"
+        "command": "cd /home/node/asg-lcc && set -a && . ./.env && set +a && python3 scripts/generate_content_opportunities.py"
       },
       "notes": "Local script only (no network beyond the configured AI provider). Reads the day's Pain Signal / Evidence Text (Lead Pool) and Message Content / Intent / Urgency (Conversation Log), runs the content-opportunity-extractor-v1 prompt, and prints a JSON object shaped {\"opportunities\":[{pain_point,topic,search_intent,recommended_format[],draft_brief,priority,source_lead_id,source_conversation_id}]}. Validates the schema; on invalid JSON or missing required fields it exits non-zero so the second (error) output fires. $env supplies AI keys and table ids at runtime; the script must never publish or post anything itself."
     },
@@ -36,12 +42,18 @@
       "name": "Parse Opportunities",
       "type": "n8n-nodes-base.set",
       "typeVersion": 1,
-      "position": [520, 0],
+      "position": [
+        520,
+        0
+      ],
       "parameters": {
         "keepOnlySet": true,
         "values": {
           "string": [
-            {"name": "opportunities_json", "value": "={{$items(\"Generate Content Opportunities\")[0].json.stdout || \"{}\"}}"}
+            {
+              "name": "opportunities_json",
+              "value": "={{$items(\"Generate Content Opportunities\")[0].json.stdout || \"{}\"}}"
+            }
           ],
           "boolean": [],
           "number": []
@@ -54,7 +66,10 @@
       "name": "Split Opportunities",
       "type": "n8n-nodes-base.splitOut",
       "typeVersion": 1,
-      "position": [780, 0],
+      "position": [
+        780,
+        0
+      ],
       "parameters": {
         "fieldToSplitOut": "opportunities",
         "options": {}
@@ -66,7 +81,10 @@
       "name": "Create Content Opportunity",
       "type": "n8n-nodes-base.feishu",
       "typeVersion": 1,
-      "position": [1040, 0],
+      "position": [
+        1040,
+        0
+      ],
       "parameters": {
         "resource": "record",
         "operation": "create",
@@ -81,14 +99,26 @@
       "name": "Error / Invalid Opportunities",
       "type": "n8n-nodes-base.set",
       "typeVersion": 1,
-      "position": [1040, 220],
+      "position": [
+        1040,
+        220
+      ],
       "parameters": {
         "keepOnlySet": true,
         "values": {
           "string": [
-            {"name": "error", "value": "={{$json.message || $json.error || $json.stderr || 'content opportunity generation failed'}}"},
-            {"name": "stage", "value": "generate_content_opportunities"},
-            {"name": "run_at", "value": "={{$now.toISO()}}"}
+            {
+              "name": "error",
+              "value": "={{$json.message || $json.error || $json.stderr || 'content opportunity generation failed'}}"
+            },
+            {
+              "name": "stage",
+              "value": "generate_content_opportunities"
+            },
+            {
+              "name": "run_at",
+              "value": "={{$now.toISO()}}"
+            }
           ],
           "boolean": [],
           "number": []
@@ -99,21 +129,61 @@
   ],
   "connections": {
     "Daily 22:00": {
-      "main": [[{"node": "Generate Content Opportunities", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Generate Content Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Generate Content Opportunities": {
       "main": [
-        [{"node": "Parse Opportunities", "type": "main", "index": 0}],
-        [{"node": "Error / Invalid Opportunities", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Parse Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error / Invalid Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Parse Opportunities": {
-      "main": [[{"node": "Split Opportunities", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Split Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Split Opportunities": {
-      "main": [[{"node": "Create Content Opportunity", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Create Content Opportunity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "settings": {"executionOrder": "v1"},
-  "meta": {"asg_boundary": "extract content ideas from real daily pain points only; source lead/conversation IDs are preserved; no automatic public posting, no invented customer cases. Credentials and table ids come from $env. Daily 22:00 schedule per docs/00 §8.7."}
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "asg_boundary": "extract content ideas from real daily pain points only; source lead/conversation IDs are preserved; no automatic public posting, no invented customer cases. Credentials and table ids come from $env. Daily 22:00 schedule per docs/00 §8.7."
+  }
 }

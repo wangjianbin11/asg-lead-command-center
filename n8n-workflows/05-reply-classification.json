@@ -7,7 +7,10 @@
       "name": "Reply Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [0, 0],
+      "position": [
+        0,
+        0
+      ],
       "parameters": {
         "httpMethod": "POST",
         "path": "asg-reply-classify",
@@ -21,7 +24,10 @@
       "name": "Manual Trigger",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
-      "position": [0, 220],
+      "position": [
+        0,
+        220
+      ],
       "parameters": {},
       "notes": "Fallback entry for an operator who pasted a reply into Conversation Log directly. Emits the sample reply payload below so the downstream classify step can run without a live webhook."
     },
@@ -30,8 +36,14 @@
       "name": "Merge Entry",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 2,
-      "position": [240, 110],
-      "parameters": {"mode": "combine", "combinationMode": "mergeByPosition"},
+      "position": [
+        240,
+        110
+      ],
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition"
+      },
       "notes": "Either entry (webhook or manual) feeds the same classification path."
     },
     {
@@ -39,9 +51,12 @@
       "name": "Classify Reply",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [460, 110],
+      "position": [
+        460,
+        110
+      ],
       "parameters": {
-        "command": "python3 scripts/classify_reply.py --json '{\"conversation_id\":\"CONV-20260621-0001\",\"lead_id\":\"LEAD-20260621-0001\",\"contact_id\":\"CT-20260621-0001\",\"channel\":\"Email\",\"direction\":\"Inbound\",\"message_content\":\"Can you send me a fulfillment quote for around 50 orders a day and your custom packaging options?\"}'"
+        "command": "cd /home/node/asg-lcc && set -a && . ./.env && set +a && python3 scripts/classify_reply.py --json '{\"conversation_id\":\"CONV-20260621-0001\",\"lead_id\":\"LEAD-20260621-0001\",\"contact_id\":\"CT-20260621-0001\",\"channel\":\"Email\",\"direction\":\"Inbound\",\"message_content\":\"Can you send me a fulfillment quote for around 50 orders a day and your custom packaging options?\"}'"
       },
       "notes": "Local script only (no network). Validates the reply-classifier-v1 JSON schema (intent/urgency/summary/customer_need/recommended_next_action/suggested_reply/should_follow_up/next_followup_days). On invalid JSON or missing fields it exits non-zero so the error branch fires. $env supplies AI keys/table ids; the script must not send anything on its own."
     },
@@ -50,15 +65,30 @@
       "name": "Parse Classification",
       "type": "n8n-nodes-base.set",
       "typeVersion": 1,
-      "position": [700, 110],
+      "position": [
+        700,
+        110
+      ],
       "parameters": {
         "keepOnlySet": true,
         "values": {
           "string": [
-            {"name": "Intent", "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").intent || \"Other\"}}"},
-            {"name": "Urgency", "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").urgency || \"Low\"}}"},
-            {"name": "AI Summary", "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").summary || \"\"}}"},
-            {"name": "Next Action", "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").recommended_next_action || \"\"}}"}
+            {
+              "name": "Intent",
+              "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").intent || \"Other\"}}"
+            },
+            {
+              "name": "Urgency",
+              "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").urgency || \"Low\"}}"
+            },
+            {
+              "name": "AI Summary",
+              "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").summary || \"\"}}"
+            },
+            {
+              "name": "Next Action",
+              "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").recommended_next_action || \"\"}}"
+            }
           ],
           "boolean": [],
           "number": []
@@ -71,7 +101,10 @@
       "name": "Update Conversation Log",
       "type": "n8n-nodes-base.feishu",
       "typeVersion": 1,
-      "position": [940, 110],
+      "position": [
+        940,
+        110
+      ],
       "parameters": {
         "resource": "record",
         "operation": "update",
@@ -87,11 +120,16 @@
       "name": "Route Quote / Meeting",
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
-      "position": [1180, 110],
+      "position": [
+        1180,
+        110
+      ],
       "parameters": {
         "conditions": {
           "boolean": [
-            {"value1": "={{$json[\"Intent\"] === \"Quote Request\" || $json[\"Intent\"] === \"Meeting Request\" || $json[\"Intent\"] === \"Cooperation\"}}"}
+            {
+              "value1": "={{$json[\"Intent\"] === \"Quote Request\" || $json[\"Intent\"] === \"Meeting Request\" || $json[\"Intent\"] === \"Cooperation\"}}"
+            }
           ]
         }
       },
@@ -102,7 +140,10 @@
       "name": "Create Quote / Meeting Task",
       "type": "n8n-nodes-base.feishu",
       "typeVersion": 1,
-      "position": [1420, 0],
+      "position": [
+        1420,
+        0
+      ],
       "parameters": {
         "resource": "record",
         "operation": "create",
@@ -117,14 +158,26 @@
       "name": "Error / Invalid Classification",
       "type": "n8n-nodes-base.set",
       "typeVersion": 1,
-      "position": [1420, 220],
+      "position": [
+        1420,
+        220
+      ],
       "parameters": {
         "keepOnlySet": true,
         "values": {
           "string": [
-            {"name": "error", "value": "={{$json.message || $json.error || 'reply classification failed'}}"},
-            {"name": "stage", "value": "classify_reply"},
-            {"name": "conversation_id", "value": "={{$('Reply Webhook').item.json.body.conversation_id || $('Reply Webhook').item.json.body[\"Conversation ID\"] || ''}}"}
+            {
+              "name": "error",
+              "value": "={{$json.message || $json.error || 'reply classification failed'}}"
+            },
+            {
+              "name": "stage",
+              "value": "classify_reply"
+            },
+            {
+              "name": "conversation_id",
+              "value": "={{$('Reply Webhook').item.json.body.conversation_id || $('Reply Webhook').item.json.body[\"Conversation ID\"] || ''}}"
+            }
           ],
           "boolean": [],
           "number": []
@@ -135,33 +188,95 @@
   ],
   "connections": {
     "Reply Webhook": {
-      "main": [[{"node": "Merge Entry", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Merge Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Manual Trigger": {
-      "main": [[{"node": "Merge Entry", "type": "main", "index": 1}]]
+      "main": [
+        [
+          {
+            "node": "Merge Entry",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
     },
     "Merge Entry": {
-      "main": [[{"node": "Classify Reply", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Classify Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Classify Reply": {
       "main": [
-        [{"node": "Parse Classification", "type": "main", "index": 0}],
-        [{"node": "Error / Invalid Classification", "type": "main", "index": 0}]
+        [
+          {
+            "node": "Parse Classification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error / Invalid Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Parse Classification": {
-      "main": [[{"node": "Update Conversation Log", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Update Conversation Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Update Conversation Log": {
-      "main": [[{"node": "Route Quote / Meeting", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Route Quote / Meeting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Route Quote / Meeting": {
       "main": [
-        [{"node": "Create Quote / Meeting Task", "type": "main", "index": 0}],
+        [
+          {
+            "node": "Create Quote / Meeting Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
         []
       ]
     }
   },
-  "settings": {"executionOrder": "v1"},
-  "meta": {"asg_boundary": "classify pasted inbound replies only; no mailbox automation, no auto-send in V1. Quote/Meeting rows are draft-only (Pending Review / Not Sent). Credentials and table ids come from $env."}
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "asg_boundary": "classify pasted inbound replies only; no mailbox automation, no auto-send in V1. Quote/Meeting rows are draft-only (Pending Review / Not Sent). Credentials and table ids come from $env."
+  }
 }

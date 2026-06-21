@@ -29,7 +29,7 @@
         0
       ],
       "parameters": {
-        "command": "python3 scripts/clean_leads.py data-samples/sample_leads.csv",
+        "command": "cd /home/node/asg-lcc && set -a && . ./.env && set +a && python3 scripts/clean_leads.py inbox/leads.csv",
         "executeOnce": false
       },
       "notes": "Alternative command for a full dry-run pipeline (built by agent A2): python3 scripts/run_lead_pipeline.py --input data-samples/sample_leads.csv --dry-run"
