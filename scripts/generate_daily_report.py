@@ -10,10 +10,10 @@ Two ways to feed data:
                           ``{"leads":[...], "outreach_tasks":[...],
                              "conversations":[...]}`` and render from it.
 
-``--feishu`` is a stub: it will raise ``ConfigError`` unless Feishu credentials
-are configured, and even then it does NOT silently call the API in this file.
-Live wiring (reading Daily Report / Lead Pool tables and writing the report
-record) is intentionally deferred to a later milestone (spec §2.A6).
+``--feishu`` writes the report to the Daily Report table, upserting by Report
+Date (re-running on the same day updates the existing row instead of stacking
+duplicates). Credentials + ``FEISHU_REPORT_TABLE_ID`` must be set; a missing
+destination fails loudly at the first call rather than silently no-op'ing.
 """
 
 from __future__ import annotations
@@ -171,19 +171,31 @@ def derive_problems(
     return problems
 
 
+def sample_records() -> Dict[str, List[Dict[str, Any]]]:
+    """Return the built-in demo leads / tasks / conversations.
+
+    Used by ``--sample`` (rendered to markdown) and by ``--feishu --sample``
+    (fed to compute_metrics + write). Factored out so both paths share one
+    source of demo data.
+    """
+    return {
+        "leads": [
+            {"Lead ID": "LEAD-20260621-0001", "Priority": "A", "Status": "Contact Found"},
+            {"Lead ID": "LEAD-20260621-0002", "Priority": "B", "Status": "Scored"},
+        ],
+        "outreach_tasks": [
+            {"Task ID": "TASK-1", "Send Status": "Sent", "Result": "Need Meeting"},
+            {"Task ID": "TASK-2", "Send Status": "Not Sent", "Result": "No Response"},
+        ],
+        "conversations": [
+            {"Conversation ID": "CONV-1", "Direction": "Inbound", "Intent": "Quote Request"},
+        ],
+    }
+
+
 def sample_payload() -> Dict[str, Any]:
-    leads = [
-        {"Lead ID": "LEAD-20260621-0001", "Priority": "A", "Status": "Contact Found"},
-        {"Lead ID": "LEAD-20260621-0002", "Priority": "B", "Status": "Scored"},
-    ]
-    tasks = [
-        {"Task ID": "TASK-1", "Send Status": "Sent", "Result": "Need Meeting"},
-        {"Task ID": "TASK-2", "Send Status": "Not Sent", "Result": "No Response"},
-    ]
-    conversations = [
-        {"Conversation ID": "CONV-1", "Direction": "Inbound", "Intent": "Quote Request"},
-    ]
-    metrics = compute_metrics(leads, tasks, conversations)
+    data = sample_records()
+    metrics = compute_metrics(data["leads"], data["outreach_tasks"], data["conversations"])
     return {
         "metrics": metrics,
         "markdown": render_markdown(metrics, dt.date.today().isoformat(), ["Need more verified contacts."]),
@@ -279,30 +291,99 @@ def render_from_payload(payload: Dict[str, List[Dict[str, Any]]], report_date: s
 """.format(date=report_date, core=core_lines, findings=findings_text, problems=blockers_text)
 
 
-def _require_feishu_credentials_or_raise() -> None:
-    """``--feishu`` stub (spec §2.A6).
+# --- Feishu write path (Daily Report table, docs/02 §6.7) -------------------
 
-    If Feishu credentials are not configured, raise ``ConfigError`` with a
-    clear message. Even when credentials ARE present this stub does NOT make
-    any network call — live write-back of the Daily Report record is deferred
-    to a later milestone. We simply refuse to proceed so the user never gets a
-    silently-no-op or a half-wired API call.
+# The fixed next-day action list. Shared by the markdown renderers and the
+# Feishu write so every report carries the same concrete forward actions
+# regardless of output channel.
+TOMORROW_ACTIONS = [
+    "Review all A priority leads that still have `Pending Review` outreach tasks.",
+    "Follow up quote requests before starting new cold outreach.",
+    "Convert repeated pain signals into Content Opportunity records.",
+]
+
+
+def _date_to_ms(date_str: str) -> int:
+    """Convert a YYYY-MM-DD date to a UTC-midnight ms-since-epoch timestamp.
+
+    Feishu DateTime fields store ms-since-epoch; mapping a calendar date to UTC
+    midnight keeps the value stable regardless of the runner's local timezone.
     """
-    try:
-        from .config import ConfigError, RuntimeConfig  # type: ignore
-    except ImportError:
-        from config import ConfigError, RuntimeConfig  # type: ignore
+    d = dt.date.fromisoformat(date_str)
+    return int(dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc).timestamp() * 1000)
 
-    runtime = RuntimeConfig.from_env()
-    configured = bool(runtime.feishu_app_id) and bool(runtime.feishu_app_secret)
-    if not configured:
-        raise ConfigError("Feishu wiring requires credentials")
-    # Credentials exist, but the actual table read/write is intentionally not
-    # implemented in this stub. Surface a clear error rather than pretending.
-    raise ConfigError(
-        "Feishu wiring requires credentials and live table mapping "
-        "(not yet implemented in this stub)"
-    )
+
+def build_report_fields(
+    metrics: Dict[str, Any],
+    report_date: str,
+    findings: List[str],
+    problems: List[str],
+) -> Dict[str, Any]:
+    """Translate metrics + sections into a Daily Report field dict (docs/02 §6.7).
+
+    Field names match docs/02 §6.7 EXACTLY so the dict is directly writable to
+    Feishu. Numbers coerce to int (default 0); the three text sections are
+    joined bullet lists; Report Date is a ms timestamp (Feishu DateTime).
+    """
+    def _bullets(items: List[str]) -> str:
+        return "\n".join("- %s" % item for item in items) if items else "- "
+
+    return {
+        "Report Date": _date_to_ms(report_date),
+        "New Leads": int(metrics.get("new_leads", 0) or 0),
+        "A Leads": int(metrics.get("a_leads", 0) or 0),
+        "B Leads": int(metrics.get("b_leads", 0) or 0),
+        "Contacts Found": int(metrics.get("contacts_found", 0) or 0),
+        "Outreach Drafts Generated": int(metrics.get("outreach_drafts_generated", 0) or 0),
+        "Messages Sent": int(metrics.get("messages_sent", 0) or 0),
+        "Replies": int(metrics.get("replies", 0) or 0),
+        "Quote Requests": int(metrics.get("quote_requests", 0) or 0),
+        "Meetings": int(metrics.get("meetings", 0) or 0),
+        "Won Deals": int(metrics.get("won_deals", 0) or 0),
+        "Lost Deals": int(metrics.get("lost_deals", 0) or 0),
+        "Main Findings": _bullets(findings),
+        "Problems": _bullets(problems),
+        "Tomorrow Actions": _bullets(TOMORROW_ACTIONS),
+    }
+
+
+def write_daily_report_to_feishu(
+    metrics: Dict[str, Any],
+    report_date: str,
+    findings: List[str],
+    problems: List[str],
+    client: Any,
+    config: Any,
+) -> Dict[str, Any]:
+    """Upsert today's Daily Report row, keyed by Report Date (docs/02 §6.7).
+
+    Matches an existing record whose Report Date equals the target date by
+    comparing the stored ms timestamp client-side (robust against Feishu
+    filter-syntax quirks on DateTime fields), updates it if found, otherwise
+    creates a new row. This makes re-running the report on the same day
+    idempotent rather than stacking duplicate daily rows. ``config.table_id``
+    ("report")`` raises a clear ``ConfigError`` when the table id is unset so a
+    missing destination fails loudly instead of silently no-op'ing.
+    """
+    table_id = config.table_id("report")
+    fields = build_report_fields(metrics, report_date, findings, problems)
+    date_ms = fields["Report Date"]
+
+    existing_id = ""
+    for record in client.list_records(table_id):
+        if (record.get("fields") or {}).get("Report Date") == date_ms:
+            existing_id = str(record.get("record_id") or "")
+            break
+
+    if existing_id:
+        client.update_record(table_id, existing_id, fields)
+        return {"action": "updated", "record_id": existing_id, "report_date": report_date}
+    created = client.create_record(table_id, fields)
+    return {
+        "action": "created",
+        "record_id": str((created or {}).get("record_id") or ""),
+        "report_date": report_date,
+    }
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -313,7 +394,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--feishu",
         action="store_true",
-        help="(stub) attempt to write the report to Feishu; raises ConfigError without credentials",
+        help="write the report to the Daily Report Feishu table (upsert by Report Date)",
     )
     parser.add_argument(
         "--date",
@@ -322,13 +403,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.feishu:
-        # Explicitly refuse to silently call the API. This raises before any
-        # report rendering so the failure is loud and unambiguous.
-        _require_feishu_credentials_or_raise()
-        return 0  # pragma: no cover - _require always raises currently
-
     report_date = args.date or dt.date.today().isoformat()
+
+    if args.feishu:
+        # Real write path (spec §2.A6): compute metrics + sections from the
+        # chosen source, then upsert one Daily Report row keyed by Report Date.
+        # Missing creds / table id fail loudly at the first client call.
+        from config import RuntimeConfig
+        from feishu_client import FeishuClient
+
+        data = sample_records() if args.sample else load_input_payload(args.input)
+        metrics = compute_metrics(data["leads"], data["outreach_tasks"], data["conversations"])
+        findings = derive_findings(data["leads"], data["outreach_tasks"], data["conversations"])
+        problems = derive_problems(data["leads"], data["outreach_tasks"])
+        result = write_daily_report_to_feishu(
+            metrics, report_date, findings, problems, FeishuClient(), RuntimeConfig.from_env()
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     if args.sample:
         payload = sample_payload()

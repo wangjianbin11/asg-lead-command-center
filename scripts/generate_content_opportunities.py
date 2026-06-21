@@ -530,6 +530,90 @@ def extract_content_opportunities(
     return opportunities
 
 
+# --- Feishu write path (Content Opportunity table, docs/02 §6.6) ------------
+
+
+def _clean_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop empty values before a Feishu write.
+
+    Feishu typed fields reject empty values of the wrong shape ("" into a
+    Relation field, [] into Text). Omitting the key leaves the field empty in
+    Feishu instead of raising. False / 0 are kept (valid Checkbox / Number
+    values). Mirrors run_lead_pipeline._clean_fields.
+    """
+    return {k: v for k, v in fields.items() if v not in (None, "", [], {})}
+
+
+def build_content_fields(opportunity: Dict[str, Any], index: int, date_str: str) -> Dict[str, Any]:
+    """Translate an opportunity dict into a Content Opportunity field dict.
+
+    Field names match docs/02 §6.6 EXACTLY so the dict is directly writable to
+    Feishu Bitable. Source ids are pulled from the snake_case keys the extractor
+    emits (``source_lead_id`` / ``source_conversation_id``). A new opportunity
+    always starts at ``Status="Idea"`` with no ``Owner`` — a human claims it
+    during content review. ``Content ID`` mirrors the LEAD-/SCORE-/TASK- pattern
+    (``CTNT-YYYYMMDD-NNNN``) so rows are traceable and sort cleanly.
+    """
+    if not date_str:
+        raise ValueError("date_str is required (YYYYMMDD)")
+    if index < 1:
+        raise ValueError("index must be >= 1")
+    return {
+        "Content ID": "CTNT-%s-%04d" % (date_str, index),
+        "Source Lead ID": _coerce_str(opportunity.get("source_lead_id")),
+        "Source Conversation ID": _coerce_str(opportunity.get("source_conversation_id")),
+        "Pain Point": opportunity.get("Pain Point", ""),
+        "Topic": opportunity.get("Topic", ""),
+        "Search Intent": opportunity.get("Search Intent", ""),
+        "Recommended Format": list(opportunity.get("Recommended Format") or []),
+        "Draft Brief": opportunity.get("Draft Brief", ""),
+        "Priority": opportunity.get("Priority", "Medium"),
+        "Status": "Idea",
+        "Owner": "",
+    }
+
+
+def write_opportunities_to_feishu(
+    opportunities: List[Dict[str, Any]],
+    client: Any,
+    config: Any,
+    *,
+    date_str: str = "",
+) -> Dict[str, Any]:
+    """Create one Content Opportunity record per opportunity in the content table.
+
+    Each content idea is a NEW row (no upsert — the same pain can legitimately
+    yield several distinct ideas over time, and dedup belongs to human review).
+    Writes are resilient: a single failed ``create_record`` is recorded in
+    ``errors`` and does NOT abort the batch (spec §0 rule 7: never crash the
+    pipeline on one bad row). ``config.table_id("content")`` raises a clear
+    ``ConfigError`` when the table id is unset so a missing destination fails
+    loudly instead of silently no-op'ing.
+    """
+    import datetime as _dt  # local: only needed to derive the default date
+
+    if not date_str:
+        date_str = _dt.date.today().strftime("%Y%m%d")
+    table_id = config.table_id("content")
+    written = 0
+    record_ids: List[str] = []
+    errors: List[Dict[str, Any]] = []
+    for index, opp in enumerate(opportunities, start=1):
+        fields = _clean_fields(build_content_fields(opp, index, date_str))
+        try:
+            created = client.create_record(table_id, fields)
+            record_ids.append(str((created or {}).get("record_id") or ""))
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - record the error, keep the batch going
+            errors.append({"content_index": index, "error": str(exc)})
+    return {
+        "total": len(opportunities),
+        "written": written,
+        "record_ids": record_ids,
+        "errors": errors,
+    }
+
+
 # --- CLI --------------------------------------------------------------------
 
 
@@ -553,6 +637,11 @@ def main(argv: List[str]) -> int:
         action="store_true",
         help="Force the deterministic rule-based extractor (skip AI even if a key is set).",
     )
+    parser.add_argument(
+        "--write-feishu",
+        action="store_true",
+        help="Write extracted opportunities to the Content Opportunity Feishu table.",
+    )
     args = parser.parse_args(argv)
 
     with open(args.input, "r", encoding="utf-8") as handle:
@@ -569,7 +658,24 @@ def main(argv: List[str]) -> int:
 
     ai_enabled = False if args.no_ai else None
     opportunities = extract_content_opportunities(records, source_type=source_type, ai_enabled=ai_enabled)
-    print(json.dumps(opportunities, ensure_ascii=False, indent=2))
+    if args.write_feishu:
+        # Real client/config built from env; missing creds/table id fail loudly at
+        # the first call rather than silently no-op'ing (mirrors run_lead_pipeline).
+        from config import RuntimeConfig
+        from feishu_client import FeishuClient
+
+        write_report = write_opportunities_to_feishu(
+            opportunities, FeishuClient(), RuntimeConfig.from_env()
+        )
+        print(
+            json.dumps(
+                {"opportunities": opportunities, "write": write_report},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        print(json.dumps(opportunities, ensure_ascii=False, indent=2))
     return 0
 
 

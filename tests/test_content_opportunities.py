@@ -10,14 +10,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from config import RuntimeConfig  # noqa: E402
 from generate_content_opportunities import (  # noqa: E402
     PAIN_POINTS,
     PRIORITIES,
     RECOMMENDED_FORMATS,
     SEARCH_INTENTS,
     _normalize_format_list,
+    build_content_fields,
     extract_content_opportunities,
     extract_from_pain_signals,
+    write_opportunities_to_feishu,
 )
 
 
@@ -319,6 +322,130 @@ class ExtractContentOpportunitiesTests(unittest.TestCase):
         ]
         opportunities = extract_from_pain_signals(signal)
         self.assertEqual(opportunities[0]["Priority"], "Low")
+
+
+class _FakeContentClient:
+    """Records create_record calls; can inject failures by 0-based CALL index.
+
+    Uses a monotonic call counter (not len(created)) so a failed call still
+    advances the index — otherwise a retry-like re-entry at the same length
+    would re-trigger the failure.
+    """
+
+    def __init__(self, *, create_fail_indices=()):
+        self.created = []
+        self.create_fail_indices = set(create_fail_indices)
+        self._calls = 0
+
+    def create_record(self, table_id, fields):
+        call_index = self._calls
+        self._calls += 1
+        if call_index in self.create_fail_indices:
+            raise RuntimeError("simulated Feishu error")
+        record = {"record_id": "rec%d" % (len(self.created) + 1), "fields": fields}
+        self.created.append((table_id, fields))
+        return record
+
+
+def _content_config():
+    # Real config with only the content table id populated.
+    return RuntimeConfig(table_ids={"content": "tblCONTENT"})
+
+
+class BuildContentFieldsTests(unittest.TestCase):
+    """Map an opportunity dict -> Content Opportunity Feishu field dict (docs/02 §6.6)."""
+
+    def _sample_opp(self):
+        return {
+            "source_lead_id": "LEAD-20260621-0001",
+            "source_conversation_id": "",
+            "Pain Point": "Shipping",
+            "Topic": "Shipping: tracking broken, 3-week delivery",
+            "Search Intent": "Problem",
+            "Recommended Format": ["SEO Blog", "Short Video"],
+            "Priority": "High",
+            "Draft Brief": "Common shipping delays and how to fix them.",
+            "review_needed": True,
+        }
+
+    def test_maps_to_pascal_case_feishu_fields(self):
+        fields = build_content_fields(self._sample_opp(), 1, "20260621")
+        self.assertEqual(fields["Content ID"], "CTNT-20260621-0001")
+        self.assertEqual(fields["Source Lead ID"], "LEAD-20260621-0001")
+        self.assertEqual(fields["Pain Point"], "Shipping")
+        self.assertEqual(fields["Topic"], "Shipping: tracking broken, 3-week delivery")
+        self.assertEqual(fields["Search Intent"], "Problem")
+        self.assertEqual(fields["Recommended Format"], ["SEO Blog", "Short Video"])
+        self.assertEqual(fields["Priority"], "High")
+        self.assertEqual(fields["Draft Brief"], "Common shipping delays and how to fix them.")
+        self.assertEqual(fields["Status"], "Idea")  # new content idea default
+        self.assertEqual(fields["Owner"], "")  # unassigned until a human picks it up
+
+    def test_content_id_zero_pads_and_increments(self):
+        fields_a = build_content_fields(self._sample_opp(), 7, "20260621")
+        fields_b = build_content_fields(self._sample_opp(), 42, "20260622")
+        self.assertEqual(fields_a["Content ID"], "CTNT-20260621-0007")
+        self.assertEqual(fields_b["Content ID"], "CTNT-20260622-0042")
+
+    def test_conversation_sourced_opportunity_maps_source_ids(self):
+        opp = self._sample_opp()
+        opp["source_lead_id"] = ""
+        opp["source_conversation_id"] = "CONV-20260621-0007"
+        fields = build_content_fields(opp, 1, "20260621")
+        self.assertEqual(fields["Source Lead ID"], "")
+        self.assertEqual(fields["Source Conversation ID"], "CONV-20260621-0007")
+
+
+class WriteOpportunitiesToFeishuTests(unittest.TestCase):
+    """write_opportunities_to_feishu: create-only writes (each idea = new row)."""
+
+    def test_writes_one_record_per_opportunity(self):
+        client = _FakeContentClient()
+        opps = [extract_from_pain_signals([{
+            "source_lead_id": "LEAD-1", "pain_signal": "shipping delay", "evidence_text": "x",
+        }])[0]]
+        opps.append(extract_from_pain_signals([{
+            "source_lead_id": "LEAD-2", "pain_signal": "moq", "evidence_text": "y",
+        }])[0])
+        report = write_opportunities_to_feishu(opps, client, _content_config(), date_str="20260621")
+        self.assertEqual(report["written"], 2)
+        self.assertEqual(len(client.created), 2)
+        self.assertEqual(client.created[0][0], "tblCONTENT")  # correct table id
+        self.assertEqual(client.created[0][1]["Content ID"], "CTNT-20260621-0001")
+        self.assertEqual(client.created[1][1]["Content ID"], "CTNT-20260621-0002")
+        self.assertEqual(len(report["record_ids"]), 2)
+
+    def test_omits_falsy_empty_fields_so_feishu_typed_fields_do_not_reject(self):
+        # A conversation-sourced opp has an empty Source Lead ID; the write must
+        # OMIT that key (not send "") so the Relation/Text field is not rejected.
+        client = _FakeContentClient()
+        opp = extract_from_pain_signals([{
+            "source_conversation_id": "CONV-1", "message_content": "shipping delay",
+        }])[0]
+        write_opportunities_to_feishu([opp], client, _content_config(), date_str="20260621")
+        written_fields = client.created[0][1]
+        self.assertNotIn("Source Lead ID", written_fields)
+        self.assertIn("Source Conversation ID", written_fields)
+
+    def test_continues_on_per_record_error_and_reports_it(self):
+        # The 2nd create fails; the 1st and 3rd must still land, and the error
+        # recorded (never crash the whole batch on one bad row).
+        client = _FakeContentClient(create_fail_indices=(1,))
+        opps = [
+            {"source_lead_id": "LEAD-1", "Pain Point": "Shipping", "Topic": "t",
+             "Search Intent": "Problem", "Recommended Format": ["SEO Blog"],
+             "Priority": "High", "Draft Brief": "b"},
+            {"source_lead_id": "LEAD-2", "Pain Point": "QC", "Topic": "t",
+             "Search Intent": "How-to", "Recommended Format": ["SEO Blog"],
+             "Priority": "Medium", "Draft Brief": "b"},
+            {"source_lead_id": "LEAD-3", "Pain Point": "Price", "Topic": "t",
+             "Search Intent": "Comparison", "Recommended Format": ["SEO Blog"],
+             "Priority": "Medium", "Draft Brief": "b"},
+        ]
+        report = write_opportunities_to_feishu(opps, client, _content_config(), date_str="20260621")
+        self.assertEqual(report["written"], 2)
+        self.assertEqual(len(report["errors"]), 1)
+        self.assertEqual(report["total"], 3)
 
 
 if __name__ == "__main__":

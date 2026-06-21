@@ -1,7 +1,31 @@
 # Feishu Base → ASG Lead Command Center 映射方案
 
 Date: 2026-06-21
-Status: **Proposal — awaiting operator confirmation** (operator was away when produced)
+Status: **Resolved 2026-06-21** — see 「Resolution」 below. 本文档下半部分是原始提案(历史背景),实际落地的决定与之不同。
+
+## Resolution(2026-06-21 实际落地)
+
+经操作员确认,**放弃复用现有中文运营表**(避免英文 LCC 字段污染中文表 + AI/手工数据混在一起),改为在同一个 Base 内新建 **8 张专用 `LeadCC·` 前缀表**:
+
+| 逻辑表 | 实际表名 | table_id 来源 | 写入路径 |
+|---|---|---|---|
+| lead | `LeadCC·Lead Pool` | `.env` FEISHU_LEAD_TABLE_ID | `run_lead_pipeline.py --write-feishu` |
+| score | `LeadCC·Lead Scoring` | FEISHU_SCORE_TABLE_ID | 同上 |
+| outreach | `LeadCC·Outreach Task` | FEISHU_OUTREACH_TABLE_ID | 同上 |
+| conversation | `LeadCC·Conversation Log` | FEISHU_CONVERSATION_TABLE_ID | (由 classify_reply 输出,n8n 写入) |
+| prompt | `LeadCC·Prompt Version` | FEISHU_PROMPT_TABLE_ID | (手工维护版本) |
+| **content** | **`LeadCC·Content Opportunity`** | FEISHU_CONTENT_TABLE_ID | **`generate_content_opportunities.py --write-feishu`**(2026-06-21 新增) |
+| **report** | **`LeadCC·Daily Report`** | FEISHU_REPORT_TABLE_ID | **`generate_daily_report.py --feishu`**(按 Report Date upsert,2026-06-21 新增) |
+| contact | (暂不新建) | — | 联系人信息内嵌在客户库,V1 跳过 |
+
+- **Content / Daily Report** 经多 agent 团队发现原候选(`11 关键词迭代表` / `20 管理仪表盘数据表`)是线上在用运营表,写入会混入手工数据;操作员选择新建专用表。两张表字段已按 docs/02 §6.6/§6.7 创建并验证(字段类型正确:Number/DateTime/SingleSelect/MultiSelect/User)。
+- content 写入:`build_content_fields` 把机会字典映射为 PascalCase 字段(Content ID=`CTNT-YYYYMMDD-NNNN`,Status 默认 `Idea`),`write_opportunities_to_feishu` 逐条 create(单条失败不中断)。
+- report 写入:`build_report_fields` 把指标映射为 Daily Report 字段(Report Date=UTC 午夜 ms 时间戳),`write_daily_report_to_feishu` 按 Report Date **upsert**(同日重跑更新而非堆叠)。
+- 两路径均已通过本地单测(FakeClient)+ 实时端到端烟测(写/读/upsert/删,表留空)。
+
+下方原始提案保留作历史背景。
+
+---
 
 真实 table_id 仅记录在 gitignored 的 `config/feishu_tables.local.json`,本文档不含 table_id。
 
