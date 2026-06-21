@@ -1,0 +1,167 @@
+{
+  "name": "05 Reply Classification",
+  "active": false,
+  "nodes": [
+    {
+      "id": "webhook-trigger",
+      "name": "Reply Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "asg-reply-classify",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "notes": "Receives a pasted inbound customer reply. Expected body shape documented in docs/00 §8.5 and docs/02 Conversation Log: Conversation ID, Lead ID, Contact ID, Channel, Message Content. Secrets/ids are read from $env at runtime, never hardcoded."
+    },
+    {
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 220],
+      "parameters": {},
+      "notes": "Fallback entry for an operator who pasted a reply into Conversation Log directly. Emits the sample reply payload below so the downstream classify step can run without a live webhook."
+    },
+    {
+      "id": "merge-trigger",
+      "name": "Merge Entry",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [240, 110],
+      "parameters": {"mode": "combine", "combinationMode": "mergeByPosition"},
+      "notes": "Either entry (webhook or manual) feeds the same classification path."
+    },
+    {
+      "id": "classify-reply",
+      "name": "Classify Reply",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [460, 110],
+      "parameters": {
+        "command": "python3 scripts/classify_reply.py --json '{\"conversation_id\":\"CONV-20260621-0001\",\"lead_id\":\"LEAD-20260621-0001\",\"contact_id\":\"CT-20260621-0001\",\"channel\":\"Email\",\"direction\":\"Inbound\",\"message_content\":\"Can you send me a fulfillment quote for around 50 orders a day and your custom packaging options?\"}'"
+      },
+      "notes": "Local script only (no network). Validates the reply-classifier-v1 JSON schema (intent/urgency/summary/customer_need/recommended_next_action/suggested_reply/should_follow_up/next_followup_days). On invalid JSON or missing fields it exits non-zero so the error branch fires. $env supplies AI keys/table ids; the script must not send anything on its own."
+    },
+    {
+      "id": "parse-classification",
+      "name": "Parse Classification",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [700, 110],
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {"name": "Intent", "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").intent || \"Other\"}}"},
+            {"name": "Urgency", "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").urgency || \"Low\"}}"},
+            {"name": "AI Summary", "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").summary || \"\"}}"},
+            {"name": "Next Action", "value": "={{JSON.parse($items(\"Classify Reply\")[0].json.stdout || \"{}\").recommended_next_action || \"\"}}"}
+          ],
+          "boolean": [],
+          "number": []
+        }
+      },
+      "notes": "Maps classifier output to docs/02 Conversation Log fields EXACTLY: Intent, Urgency, AI Summary, Next Action. Field names match the schema; nothing is invented. Urgency is forced High downstream when Intent == 'Quote Request'."
+    },
+    {
+      "id": "update-conversation-log",
+      "name": "Update Conversation Log",
+      "type": "n8n-nodes-base.feishu",
+      "typeVersion": 1,
+      "position": [940, 110],
+      "parameters": {
+        "resource": "record",
+        "operation": "update",
+        "appToken": "={{$env.FEISHU_BASE_APP_TOKEN}}",
+        "tableId": "={{$env.FEISHU_CONVERSATION_TABLE_ID}}",
+        "recordId": "={{$('Reply Webhook').item.json.body.record_id || $('Reply Webhook').item.json.body.recordId || ''}}",
+        "fields": "={{JSON.stringify({Intent:$json[\"Intent\"],Urgency:$json[\"Urgency\"],\"AI Summary\":$json[\"AI Summary\"],\"Next Action\":$json[\"Next Action\"]})}}"
+      },
+      "notes": "Writes the four AI-derived fields back to the Conversation Log record the operator pasted the reply into. record_id comes from the webhook payload; table/app tokens come from $env. No-op if credentials are not configured (n8n will surface a credential error)."
+    },
+    {
+      "id": "route-quote-meeting",
+      "name": "Route Quote / Meeting",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1180, 110],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {"value1": "={{$json[\"Intent\"] === \"Quote Request\" || $json[\"Intent\"] === \"Meeting Request\" || $json[\"Intent\"] === \"Cooperation\"}}"}
+          ]
+        }
+      },
+      "notes": "Branch true only when the classified intent requires a salesperson task: Quote Request, Meeting Request, or Cooperation. Everything else (Inquiry/Objection/Not Interested/etc.) terminates after the Conversation Log writeback."
+    },
+    {
+      "id": "create-quote-meeting-task",
+      "name": "Create Quote / Meeting Task",
+      "type": "n8n-nodes-base.feishu",
+      "typeVersion": 1,
+      "position": [1420, 0],
+      "parameters": {
+        "resource": "record",
+        "operation": "create",
+        "appToken": "={{$env.FEISHU_BASE_APP_TOKEN}}",
+        "tableId": "={{$env.FEISHU_OUTREACH_TABLE_ID}}",
+        "fields": "={{JSON.stringify({\"Lead ID\":$('Reply Webhook').item.json.body.lead_id || $('Reply Webhook').item.json.body[\"Lead ID\"] || \"\",\"Contact ID\":$('Reply Webhook').item.json.body.contact_id || $('Reply Webhook').item.json.body[\"Contact ID\"] || \"\",\"Owner\":$('Reply Webhook').item.json.body.owner || \"\",\"Channel\":$('Reply Webhook').item.json.body.channel || \"Email\",\"Message Type\":$json[\"Intent\"] === \"Meeting Request\" ? \"Reply\" : \"Quote Explanation\",\"AI Draft\":\"\",\"Human Edited Version\":\"\",\"Approval Status\":\"Pending Review\",\"Send Status\":\"Not Sent\",\"Result\":$json[\"Intent\"] === \"Quote Request\" ? \"Need Quote\" : ($json[\"Intent\"] === \"Meeting Request\" ? \"Need Meeting\" : \"Interested\"),\"Notes\":\"Auto-created from reply classification. Human review required.\"})}}"
+      },
+      "notes": "Creates a review-only Outreach Task row. Draft-only by contract: Approval Status=Pending Review, Send Status=Not Sent. Message Type and Result are derived from Intent per docs/02 Outreach Task options. No auto-send."
+    },
+    {
+      "id": "error-branch",
+      "name": "Error / Invalid Classification",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1420, 220],
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {"name": "error", "value": "={{$json.message || $json.error || 'reply classification failed'}}"},
+            {"name": "stage", "value": "classify_reply"},
+            {"name": "conversation_id", "value": "={{$('Reply Webhook').item.json.body.conversation_id || $('Reply Webhook').item.json.body[\"Conversation ID\"] || ''}}"}
+          ],
+          "boolean": [],
+          "number": []
+        }
+      },
+      "notes": "Reaches here only when Classify Reply exits non-zero (invalid AI JSON / schema violation / missing script). Emits a structured error record. No partial Conversation Log write happens on this path."
+    }
+  ],
+  "connections": {
+    "Reply Webhook": {
+      "main": [[{"node": "Merge Entry", "type": "main", "index": 0}]]
+    },
+    "Manual Trigger": {
+      "main": [[{"node": "Merge Entry", "type": "main", "index": 1}]]
+    },
+    "Merge Entry": {
+      "main": [[{"node": "Classify Reply", "type": "main", "index": 0}]]
+    },
+    "Classify Reply": {
+      "main": [
+        [{"node": "Parse Classification", "type": "main", "index": 0}],
+        [{"node": "Error / Invalid Classification", "type": "main", "index": 0}]
+      ]
+    },
+    "Parse Classification": {
+      "main": [[{"node": "Update Conversation Log", "type": "main", "index": 0}]]
+    },
+    "Update Conversation Log": {
+      "main": [[{"node": "Route Quote / Meeting", "type": "main", "index": 0}]]
+    },
+    "Route Quote / Meeting": {
+      "main": [
+        [{"node": "Create Quote / Meeting Task", "type": "main", "index": 0}],
+        []
+      ]
+    }
+  },
+  "settings": {"executionOrder": "v1"},
+  "meta": {"asg_boundary": "classify pasted inbound replies only; no mailbox automation, no auto-send in V1. Quote/Meeting rows are draft-only (Pending Review / Not Sent). Credentials and table ids come from $env."}
+}

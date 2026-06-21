@@ -1,0 +1,340 @@
+{
+  "name": "01 Manual Lead Import",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "asg_boundary": "Manual lead import skeleton. Runs clean_leads.py (or run_lead_pipeline.py --dry-run) locally; writes a cleaned record to the Feishu Lead Pool table only on the success path. Draft/no-auto-send boundary: this workflow never sends any outreach — every created lead starts with Status=New and Approval/Send flags remain untouched. Secrets (FEISHU_APP_ID/FEISHU_APP_SECRET/FEISHU_BASE_APP_TOKEN/FEISHU_LEAD_TABLE_ID) are referenced via $env only and are never literal. No real API call until credentials are configured; without them the HTTP writeback node will fail safely at runtime and route to the error path."
+  },
+  "nodes": [
+    {
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "clean-leads",
+      "name": "Clean Leads Locally",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "command": "python3 scripts/clean_leads.py data-samples/sample_leads.csv",
+        "executeOnce": false
+      },
+      "notes": "Alternative command for a full dry-run pipeline (built by agent A2): python3 scripts/run_lead_pipeline.py --input data-samples/sample_leads.csv --dry-run"
+    },
+    {
+      "id": "parse-cleaned-json",
+      "name": "Parse Cleaned Rows",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        520,
+        0
+      ],
+      "parameters": {
+        "functionCode": "// Convert the executeCommand stdout (cleaned lead rows JSON array)\n// into one n8n item per cleaned row. Invalid/missing rows keep\n// Status='Need Manual Check' and are routed to the error path\n// by the subsequent IF node so they never reach Feishu writeback.\nconst stdout = items[0].json.stdout || '[]';\nlet rows = [];\ntry {\n  rows = JSON.parse(stdout);\n} catch (err) {\n  // Surface a hard parse failure as an explicit error item.\n  return [{ json: { _error: 'Failed to parse clean_leads.py output: ' + err.message, stdout: stdout } }];\n}\nreturn rows.map((row) => ({ json: row }));"
+      }
+    },
+    {
+      "id": "gate-valid-rows",
+      "name": "Is Valid Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        780,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_valid }}",
+              "value2": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "build-feishu-fields",
+      "name": "Build Lead Pool Fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        -120
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "Company / Store Name",
+              "value": "={{ $json.company_name }}",
+              "type": "string"
+            },
+            {
+              "name": "Website URL",
+              "value": "={{ $json.website_url }}",
+              "type": "string"
+            },
+            {
+              "name": "Platform",
+              "value": "={{ $json.platform }}",
+              "type": "string"
+            },
+            {
+              "name": "Country / Region",
+              "value": "={{ $json.country }}",
+              "type": "string"
+            },
+            {
+              "name": "Category",
+              "value": "={{ $json.category }}",
+              "type": "string"
+            },
+            {
+              "name": "Source Channel",
+              "value": "={{ $json.source_channel }}",
+              "type": "string"
+            },
+            {
+              "name": "Source URL",
+              "value": "={{ $json.source_url }}",
+              "type": "string"
+            },
+            {
+              "name": "Notes",
+              "value": "={{ $json.notes }}",
+              "type": "string"
+            },
+            {
+              "name": "Status",
+              "value": "New",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Field names mirror docs/02-feishu-base-schema.md exactly. Status defaults to 'New' for newly imported leads; ASG Fit Score/Priority are set later by the scoring workflow."
+    },
+    {
+      "id": "feishu-create-record",
+      "name": "Write Lead To Feishu",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        1300,
+        -120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://open.feishu.cn/open-apis/bitable/v1/apps/' + $env.FEISHU_BASE_APP_TOKEN + '/tables/' + $env.FEISHU_LEAD_TABLE_ID + '/records' }}",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.FEISHU_TENANT_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"fields\": {{ $json }} }",
+        "options": {}
+      },
+      "notes": "Secrets via $env only — never literal. Without FEISHU_BASE_APP_TOKEN / FEISHU_LEAD_TABLE_ID / FEISHU_TENANT_ACCESS_TOKEN configured, this node fails safely and routes to the Error Log node. The tenant access token is obtained out-of-band (or via an upstream auth node) and stored in env; the workflow itself does not embed app_secret."
+    },
+    {
+      "id": "success-shape",
+      "name": "Success Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        -120
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "lead_id",
+              "value": "={{ $json.record.record_id || '' }}",
+              "type": "string"
+            },
+            {
+              "name": "status",
+              "value": "created",
+              "type": "string"
+            },
+            {
+              "name": "imported_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Mirrors docs/00 §8.1 output contract: { lead_id, status: created }."
+    },
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        360
+      ],
+      "parameters": {},
+      "notes": "Catches any node failure (script crash, JSON parse failure, HTTP non-2xx, missing $env secrets). Wired to the Error Log node so all failures land in one auditable place per docs/00 §8.1 acceptance 4."
+    },
+    {
+      "id": "error-log",
+      "name": "Error Log",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        260,
+        360
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "workflow",
+              "value": "01 Manual Lead Import",
+              "type": "string"
+            },
+            {
+              "name": "failed_node",
+              "value": "={{ $json.execution?.lastNode?.name || '' }}",
+              "type": "string"
+            },
+            {
+              "name": "error_message",
+              "value": "={{ $json.execution?.error?.message || $json.error || $json._error || 'unknown error' }}",
+              "type": "string"
+            },
+            {
+              "name": "logged_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            },
+            {
+              "name": "boundary",
+              "value": "draft import; nothing was auto-sent to the lead",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Clean Leads Locally",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean Leads Locally": {
+      "main": [
+        [
+          {
+            "node": "Parse Cleaned Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Cleaned Rows": {
+      "main": [
+        [
+          {
+            "node": "Is Valid Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Valid Lead?": {
+      "main": [
+        [
+          {
+            "node": "Build Lead Pool Fields",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Lead Pool Fields": {
+      "main": [
+        [
+          {
+            "node": "Write Lead To Feishu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Lead To Feishu": {
+      "main": [
+        [
+          {
+            "node": "Success Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

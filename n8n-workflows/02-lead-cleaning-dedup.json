@@ -1,0 +1,226 @@
+{
+  "name": "02 Lead Cleaning & Dedup",
+  "active": false,
+  "nodes": [
+    {
+      "id": "schedule-hourly",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "notes": "Triggers the cleaning/dedup pass on the hour, every hour (docs/00 §8.2)."
+    },
+    {
+      "id": "dedupe-leads",
+      "name": "Dedupe Leads Locally",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "command": "python3 scripts/dedupe_leads.py data-samples/sample_leads.csv",
+        "executeOnce": false
+      },
+      "notes": "Runs scripts/dedupe_leads.py (stdlib only). Outputs one JSON object per row with is_duplicate / duplicate_type / master_lead_id. Never deletes rows; duplicates are only flagged."
+    },
+    {
+      "id": "prepare-feishu-payload",
+      "name": "Prepare Lead Pool Update",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [
+        520,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "lead-id",
+              "name": "lead_id",
+              "value": "={{ $json.lead_id || $json['Lead ID'] || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "is-duplicate",
+              "name": "is_duplicate",
+              "value": "={{ $json.is_duplicate }}",
+              "type": "boolean"
+            },
+            {
+              "id": "master-lead-id",
+              "name": "master_lead_id",
+              "value": "={{ $json.master_lead_id }}",
+              "type": "string"
+            },
+            {
+              "id": "status",
+              "name": "Status",
+              "value": "={{ $json.is_duplicate ? 'Duplicate' : 'New' }}",
+              "type": "string"
+            },
+            {
+              "id": "notes",
+              "name": "Notes",
+              "value": "={{ $json.is_duplicate ? ('Duplicate of ' + ($json.master_lead_id || 'unknown') + ' (' + ($json.duplicate_type || 'unknown') + ')') : '' }}",
+              "type": "string"
+            },
+            {
+              "id": "last-updated",
+              "name": "Last Updated",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Builds the Lead Pool field dict (field names match docs/02 exactly). Non-duplicates stay Status=New; duplicates are marked Status=Duplicate and linked to the master record in Notes. No record is deleted."
+    },
+    {
+      "id": "update-lead-pool",
+      "name": "Update Lead Pool (Feishu)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        780,
+        0
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://open.feishu.cn/open-apis/bitable/v1/apps/{{$env.FEISHU_BASE_APP_TOKEN}}/tables/{{$env.FEISHU_LEAD_TABLE_ID}}/records/{{$json.lead_id}}",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json; charset=utf-8"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.FEISHU_TENANT_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"fields\": {\n    \"Status\": {{$json.Status && $json.Status.length ? ('\"' + $json.Status + '\"') : 'null'}},\n    \"Notes\": {{$json.Notes && $json.Notes.length ? ('\"' + $json.Notes + '\"') : 'null'}},\n    \"Last Updated\": {{$json['Last Updated'] && $json['Last Updated'].length ? ('\"' + $json['Last Updated'] + '\"') : 'null'}}\n  }\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": false
+            }
+          }
+        }
+      },
+      "notes": "Writes the dedup decision back to the Lead Pool table. All identifiers come from $env (FEISHU_BASE_APP_TOKEN, FEISHU_LEAD_TABLE_ID); the bearer token is supplied by the Feishu Tenant Token credential, never hardcoded. This node is a no-op until credentials are configured (spec ground rule #5)."
+    },
+    {
+      "id": "dedupe-error",
+      "name": "Handle Dedup Error",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.2,
+      "position": [
+        260,
+        240
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "error-stage",
+              "name": "error_stage",
+              "value": "02-lead-cleaning-dedup",
+              "type": "string"
+            },
+            {
+              "id": "error-node",
+              "name": "error_node",
+              "value": "={{ $node['Dedupe Leads Locally'].name }}",
+              "type": "string"
+            },
+            {
+              "id": "error-message",
+              "name": "error_message",
+              "value": "={{ $json.message || $json.error || 'dedupe script or Feishu writeback failed' }}",
+              "type": "string"
+            },
+            {
+              "id": "error-time",
+              "name": "error_time",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            },
+            {
+              "id": "review-needed",
+              "name": "review_needed",
+              "value": true,
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Error path: captures failures from the dedupe script or the Feishu PUT and emits a structured error envelope (stage/node/message/time) flagged for human review. Does not silently swallow failures (spec §4d)."
+    }
+  ],
+  "connections": {
+    "Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Dedupe Leads Locally",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedupe Leads Locally": {
+      "main": [
+        [
+          {
+            "node": "Prepare Lead Pool Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Lead Pool Update": {
+      "main": [
+        [
+          {
+            "node": "Update Lead Pool (Feishu)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "ASG Lead Pipeline Error Handler"
+  },
+  "meta": {
+    "asg_boundary": "Reads Status=New leads (clean step) and runs scripts/dedupe_leads.py via executeCommand, then writes the dedup decision back to the Feishu Lead Pool via HTTP PUT. Duplicates are MARKED (Status=Duplicate, master linked in Notes), never deleted. No outreach is generated here and nothing is auto-sent; all customer-facing action stays manual in V1. Secrets and table ids are referenced only through $env / named credentials — no literals."
+  }
+}

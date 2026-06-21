@@ -1,0 +1,5 @@
+lead_id,company_name,website_url,source_channel,source_url,notes,country,platform,category,email
+LEAD-20260621-0001,Northstar Socks,https://www.northstarsocks.example/products/compression,Manual,https://reddit.example/thread/shipping-delay,"Shopify store mentions shipping delay and custom packaging interest.",US,Shopify,Compression socks,ops@northstarsocks.example
+LEAD-20260621-0002,Urban Pet Gear,http://urbanpetgear.example/,Manual,,"Growing pet accessories store. Needs supplier comparison.",UK,WooCommerce,Pet accessories,hello@urbanpetgear.example
+LEAD-20260621-0003,Northstar Socks,https://northstarsocks.example/about,Google,https://reddit.example/thread/shipping-delay,"Duplicate domain for dedupe test.",United States,Shopify,Compression socks,contact@northstarsocks.example
+

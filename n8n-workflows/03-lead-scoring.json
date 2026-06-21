@@ -1,0 +1,235 @@
+{
+  "name": "03 Lead Scoring",
+  "active": false,
+  "nodes": [
+    {
+      "id": "schedule-hourly",
+      "name": "Hourly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "notes": "Spec docs/00 §8.3: scoring runs hourly over Lead Pool rows where Status = New or scoring needed."
+    },
+    {
+      "id": "score-pipeline",
+      "name": "Run Lead Scoring",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "command": "python3 scripts/run_lead_pipeline.py --input data-samples/sample_leads.csv --write-feishu",
+        "executeOnce": false
+      },
+      "notes": "Primary path: run_lead_pipeline.py cleans, dedupes, scores (AI when a key is present, else local heuristic with review_needed=true), writes Lead Scoring rows and updates Lead Pool. Single-payload fallback: `python3 scripts/score_leads.py --json '<scoring json>'` validates one AI scoring payload. No secrets on the command line."
+    },
+    {
+      "id": "check-scoring-ok",
+      "name": "Scoring OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.exitCode === 0 }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "notes": "Branch on the executeCommand exit code. exitCode 0 (or a parsed scoring payload without review_needed override) -> write back to Feishu. Anything else -> error handler."
+    },
+    {
+      "id": "write-lead-scoring",
+      "name": "Write Lead Scoring Row",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        740,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://open.feishu.cn/open-apis/bitable/v1/apps/' . $env.FEISHU_BASE_APP_TOKEN . '/tables/' . $env.FEISHU_SCORE_TABLE_ID . '/records' }}",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.FEISHU_TENANT_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { fields: { 'Score ID': 'SCORE-' . $json.lead_id, 'Lead ID': $json.lead_id, 'Total Score': $json.total_score, 'Sourcing Need Score': $json.sourcing_need_score, 'Fulfillment Pain Score': $json.fulfillment_pain_score, 'Custom Packaging Score': $json.custom_packaging_score, 'Store Maturity Score': $json.store_maturity_score, 'Contactability Score': $json.contactability_score, 'ASG Service Fit Score': $json.asg_service_fit_score, 'Reasoning Summary': $json.reasoning_summary, 'Main Pain Point': $json.main_pain_point, 'Recommended Offer': $json.recommended_offer, 'Risk': $json.risk, 'Review Needed': $json.review_needed } } }}",
+        "options": {}
+      },
+      "continueOnFail": true,
+      "notes": "Success path (1 of 2): persist the auditable scoring breakdown to the Lead Scoring table. Field names match docs/02 §6.3 exactly. Table id and base token come from $env, never literals. Only runs after scoring JSON validates."
+    },
+    {
+      "id": "update-lead-pool",
+      "name": "Update Lead Pool Score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        740,
+        160
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ 'https://open.feishu.cn/open-apis/bitable/v1/apps/' . $env.FEISHU_BASE_APP_TOKEN . '/tables/' . $env.FEISHU_LEAD_TABLE_ID . '/records/' . $json.record_id }}",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.FEISHU_TENANT_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { fields: { 'ASG Fit Score': $json.total_score, 'Priority': $json.priority, 'Status': 'Scored' } } }}",
+        "options": {}
+      },
+      "continueOnFail": true,
+      "notes": "Success path (2 of 2): denormalize the total score onto Lead Pool and advance Status New -> Scored. Fields per docs/02 §6.1. Status is set to 'Scored' only; this workflow never sends outreach (handled by 04, draft-only)."
+    },
+    {
+      "id": "scoring-error",
+      "name": "Scoring Error Handler",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "error-marker",
+              "name": "error",
+              "value": "lead-scoring-failed",
+              "type": "string"
+            },
+            {
+              "id": "error-detail",
+              "name": "error_detail",
+              "value": "={{ $json.error || $json.message || $json.stderr || 'unknown scoring failure' }}",
+              "type": "string"
+            },
+            {
+              "id": "review-needed",
+              "name": "review_needed",
+              "value": "true",
+              "type": "boolean"
+            },
+            {
+              "id": "workflow",
+              "name": "workflow",
+              "value": "03-lead-scoring",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Error path: any AI/JSON/Feishu failure lands here, review_needed is forced true, and the row is routed to manual review per docs/00 §8.3 acceptance (parse failure -> human review). No retry storms, no silent drop. Wire this node's output to a notification/Feishu group node in production."
+    }
+  ],
+  "connections": {
+    "Hourly Schedule": {
+      "main": [
+        [
+          {
+            "node": "Run Lead Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Lead Scoring": {
+      "main": [
+        [
+          {
+            "node": "Scoring OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scoring OK?": {
+      "main": [
+        [
+          {
+            "node": "Write Lead Scoring Row",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Lead Pool Score",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Scoring Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Lead Scoring Row": {
+      "main": [
+        []
+      ]
+    },
+    "Update Lead Pool Score": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "asg_boundary": "AI lead scoring is audit/draft only: scores write to Lead Scoring + Lead Pool (ASG Fit Score, Priority, Status=Scored). This workflow NEVER sends outreach, never auto-messages leads, and never publishes content. On AI/JSON failure the lead is routed to human review (review_needed=true) rather than auto-acted-on. All secrets via $env; no literal credentials or table ids."
+  }
+}

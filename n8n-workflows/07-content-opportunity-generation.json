@@ -1,0 +1,119 @@
+{
+  "name": "07 Content Opportunity Generation",
+  "active": false,
+  "nodes": [
+    {
+      "id": "schedule-trigger",
+      "name": "Daily 22:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 22 * * *"
+            }
+          ]
+        }
+      },
+      "notes": "Fires once a day at 22:00 per docs/00 §8.7. The workflow then reads the day's real pain signals, replies, and objections and extracts content opportunities. No customer-facing action is taken; output is review-only."
+    },
+    {
+      "id": "generate-opportunities",
+      "name": "Generate Content Opportunities",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [260, 0],
+      "parameters": {
+        "command": "python3 scripts/generate_content_opportunities.py"
+      },
+      "notes": "Local script only (no network beyond the configured AI provider). Reads the day's Pain Signal / Evidence Text (Lead Pool) and Message Content / Intent / Urgency (Conversation Log), runs the content-opportunity-extractor-v1 prompt, and prints a JSON object shaped {\"opportunities\":[{pain_point,topic,search_intent,recommended_format[],draft_brief,priority,source_lead_id,source_conversation_id}]}. Validates the schema; on invalid JSON or missing required fields it exits non-zero so the second (error) output fires. $env supplies AI keys and table ids at runtime; the script must never publish or post anything itself."
+    },
+    {
+      "id": "parse-opportunities",
+      "name": "Parse Opportunities",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [520, 0],
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {"name": "opportunities_json", "value": "={{$items(\"Generate Content Opportunities\")[0].json.stdout || \"{}\"}}"}
+          ],
+          "boolean": [],
+          "number": []
+        }
+      },
+      "notes": "Captures the script's stdout as a single string for the Split node to itemize. Empty stdout defaults to '{}' so the next step produces zero items instead of erroring."
+    },
+    {
+      "id": "split-opportunities",
+      "name": "Split Opportunities",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [780, 0],
+      "parameters": {
+        "fieldToSplitOut": "opportunities",
+        "options": {}
+      },
+      "notes": "One item per opportunity so each is written as its own Content Opportunity row. Reads the 'opportunities' array parsed from the script JSON."
+    },
+    {
+      "id": "create-content-opportunity",
+      "name": "Create Content Opportunity",
+      "type": "n8n-nodes-base.feishu",
+      "typeVersion": 1,
+      "position": [1040, 0],
+      "parameters": {
+        "resource": "record",
+        "operation": "create",
+        "appToken": "={{$env.FEISHU_BASE_APP_TOKEN}}",
+        "tableId": "={{$env.FEISHU_CONTENT_TABLE_ID}}",
+        "fields": "={{JSON.stringify({\"Content ID\":\"\",\"Source Lead ID\":$json.source_lead_id || \"\",\"Source Conversation ID\":$json.source_conversation_id || \"\",\"Pain Point\":$json.pain_point || \"\",\"Topic\":$json.topic || \"\",\"Search Intent\":$json.search_intent || \"\",\"Recommended Format\":Array.isArray($json.recommended_format) ? $json.recommended_format : [],\"Draft Brief\":$json.draft_brief || \"\",\"Priority\":$json.priority || \"Low\",\"Status\":\"New\",\"Owner\":\"\"})}}"
+      },
+      "notes": "Writes one Content Opportunity row per item. Field names match docs/02 Content Opportunity EXACTLY: Content ID, Source Lead ID, Source Conversation ID, Pain Point, Topic, Search Intent, Recommended Format (array -> multi-select), Draft Brief, Priority, Status, Owner. Source Lead ID and Source Conversation ID are preserved from the script output so every idea traces back to a real lead/conversation (docs/06 rule: never invent a customer case). Status defaults to New (docs/02 Content Opportunity Status options: New/Drafted/Reviewed/Published); nothing is published automatically. appToken/tableId come from $env only; Content ID/Owner are left blank for the script/operator to fill."
+    },
+    {
+      "id": "error-branch",
+      "name": "Error / Invalid Opportunities",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1040, 220],
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {"name": "error", "value": "={{$json.message || $json.error || $json.stderr || 'content opportunity generation failed'}}"},
+            {"name": "stage", "value": "generate_content_opportunities"},
+            {"name": "run_at", "value": "={{$now.toISO()}}"}
+          ],
+          "boolean": [],
+          "number": []
+        }
+      },
+      "notes": "Reached only when Generate Content Opportunities exits non-zero (invalid AI JSON, schema violation, or missing script). Emits a structured error record with the stage name and timestamp. No Content Opportunity rows are written on this path."
+    }
+  ],
+  "connections": {
+    "Daily 22:00": {
+      "main": [[{"node": "Generate Content Opportunities", "type": "main", "index": 0}]]
+    },
+    "Generate Content Opportunities": {
+      "main": [
+        [{"node": "Parse Opportunities", "type": "main", "index": 0}],
+        [{"node": "Error / Invalid Opportunities", "type": "main", "index": 0}]
+      ]
+    },
+    "Parse Opportunities": {
+      "main": [[{"node": "Split Opportunities", "type": "main", "index": 0}]]
+    },
+    "Split Opportunities": {
+      "main": [[{"node": "Create Content Opportunity", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {"executionOrder": "v1"},
+  "meta": {"asg_boundary": "extract content ideas from real daily pain points only; source lead/conversation IDs are preserved; no automatic public posting, no invented customer cases. Credentials and table ids come from $env. Daily 22:00 schedule per docs/00 §8.7."}
+}

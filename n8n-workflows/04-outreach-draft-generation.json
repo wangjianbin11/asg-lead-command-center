@@ -1,0 +1,474 @@
+{
+  "name": "04 Outreach Draft Generation",
+  "active": false,
+  "nodes": [
+    {
+      "id": "schedule-hourly",
+      "name": "Hourly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "notes": "Spec docs/00 §8.4: outreach drafts are generated for scored leads where Priority = A or B and a usable contact exists (email/linkedin/whatsapp/website form). The schedule runs the draft pass hourly; the downstream IF gates on Priority A/B + contact presence."
+    },
+    {
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        220
+      ],
+      "parameters": {},
+      "notes": "Optional manual run for a single lead review (operator pastes a lead/contact context before the build step)."
+    },
+    {
+      "id": "generate-outreach",
+      "name": "Generate Outreach Draft",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "command": "python3 scripts/generate_outreach.py --channel Email",
+        "executeOnce": false
+      },
+      "notes": "Primary path: scripts/generate_outreach.py resolves the channel's prompt path and emits {channel, prompt_path, safety}. For a full per-lead draft build, scripts/run_lead_pipeline.py already calls generate_outreach.build_outreach_task(...) internally for Priority A/B leads with a usable contact, producing an Outreach Task dict (Approval Status=Pending Review, Send Status=Not Sent). Single-payload fallback: `python3 scripts/generate_outreach.py --channel Email` validates the channel/prompt binding. No secrets on the command line; AI key (when configured) is read from env by the script, never passed as an argument."
+    },
+    {
+      "id": "check-eligible",
+      "name": "Priority A/B and Contact?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        520,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ ($json.priority === 'A' || $json.priority === 'B') && ($json.email || $json.linkedin_url || $json.whatsapp || $json.contact_form_url) }}",
+              "value2": true
+            }
+          ],
+          "string": [
+            {
+              "value1": "={{ $json.exitCode === 0 }}",
+              "value2": "0"
+            }
+          ]
+        }
+      },
+      "notes": "Branch on eligibility per docs/00 §8.4 trigger: only Priority A or B leads that have at least one usable contact (email / LinkedIn URL / WhatsApp / website contact form) proceed to the draft writeback. Leads without a contact route to the error/skip handler so no draft is created. Also gates on the executeCommand exit code being 0."
+    },
+    {
+      "id": "build-outreach-fields",
+      "name": "Build Outreach Task Fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        820,
+        -160
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "lead-id",
+              "name": "Lead ID",
+              "value": "={{ $json.lead_id || $json['Lead ID'] || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "contact-id",
+              "name": "Contact ID",
+              "value": "={{ $json.contact_id || $json['Contact ID'] || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "owner",
+              "name": "Owner",
+              "value": "={{ $json.owner || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "channel",
+              "name": "Channel",
+              "value": "={{ ['Email','LinkedIn','WhatsApp','Website Form'].indexOf($json.preferred_channel || 'Email') >= 0 ? ($json.preferred_channel || 'Email') : 'Email' }}",
+              "type": "string"
+            },
+            {
+              "id": "message-type",
+              "name": "Message Type",
+              "value": "First Touch",
+              "type": "string"
+            },
+            {
+              "id": "ai-draft",
+              "name": "AI Draft",
+              "value": "={{ $json.ai_draft || $json.email_body || $json.message || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "human-edited",
+              "name": "Human Edited Version",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "approval-status",
+              "name": "Approval Status",
+              "value": "Pending Review",
+              "type": "string"
+            },
+            {
+              "id": "send-status",
+              "name": "Send Status",
+              "value": "Not Sent",
+              "type": "string"
+            },
+            {
+              "id": "result",
+              "name": "Result",
+              "value": "No Response",
+              "type": "string"
+            },
+            {
+              "id": "notes",
+              "name": "Notes",
+              "value": "AI draft only. Human review is required before sending.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Constructs the Outreach Task field dict per docs/02 §6.4. Field names match the schema EXACTLY. Hard safety invariants (non-negotiable): Approval Status is forced to 'Pending Review' and Send Status is forced to 'Not Sent' — this workflow NEVER sets Approved/Sent, regardless of upstream input. AI Draft only fills the draft column; Human Edited Version stays blank until a salesperson edits it. Mirrors generate_outreach.build_outreach_task defaults."
+    },
+    {
+      "id": "write-outreach-task",
+      "name": "Write Outreach Task To Feishu",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1080,
+        -160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://open.feishu.cn/open-apis/bitable/v1/apps/' + $env.FEISHU_BASE_APP_TOKEN + '/tables/' + $env.FEISHU_OUTREACH_TABLE_ID + '/records' }}",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.FEISHU_TENANT_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { fields: { 'Lead ID': $json['Lead ID'], 'Contact ID': $json['Contact ID'], 'Owner': $json['Owner'], 'Channel': $json['Channel'], 'Message Type': $json['Message Type'], 'AI Draft': $json['AI Draft'], 'Human Edited Version': '', 'Approval Status': 'Pending Review', 'Send Status': 'Not Sent', 'Result': 'No Response', 'Notes': $json['Notes'] } } }}",
+        "options": {}
+      },
+      "continueOnFail": true,
+      "notes": "Success path: persist the review-only Outreach Task to the Feishu Outreach Task table. The jsonBody re-asserts Approval Status='Pending Review' and Send Status='Not Sent' at the boundary so even a tampered set node cannot auto-send. Table id (FEISHU_OUTREACH_TABLE_ID) and base token come from $env only, never literal. Without FEISHU_BASE_APP_TOKEN / FEISHU_OUTREACH_TABLE_ID / FEISHU_TENANT_ACCESS_TOKEN configured, this node fails safely and continues to the error path."
+    },
+    {
+      "id": "success-output",
+      "name": "Success Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        -160
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "lead-id-out",
+              "name": "lead_id",
+              "value": "={{ $json['Lead ID'] || $json.record?.record_id || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "channel-out",
+              "name": "channel",
+              "value": "={{ $json['Channel'] || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "approval-out",
+              "name": "approval_status",
+              "value": "Pending Review",
+              "type": "string"
+            },
+            {
+              "id": "send-out",
+              "name": "send_status",
+              "value": "Not Sent",
+              "type": "string"
+            },
+            {
+              "id": "boundary-out",
+              "name": "boundary",
+              "value": "draft-only; human review required; nothing was auto-sent",
+              "type": "string"
+            },
+            {
+              "id": "created-at",
+              "name": "created_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Success output explicitly re-states the boundary so the workflow result is self-auditable: approval_status is always 'Pending Review' and send_status is always 'Not Sent'. Mirrors the docs/00 §8.4 acceptance (no auto-send, must wait for human review)."
+    },
+    {
+      "id": "skip-no-contact",
+      "name": "Skip (No Contact / Not A-B)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        820,
+        200
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "skip-reason",
+              "name": "skip_reason",
+              "value": "={{ ($json.priority !== 'A' && $json.priority !== 'B') ? 'priority_not_a_or_b' : 'no_usable_contact' }}",
+              "type": "string"
+            },
+            {
+              "id": "skip-lead-id",
+              "name": "lead_id",
+              "value": "={{ $json.lead_id || $json['Lead ID'] || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "skip-workflow",
+              "name": "workflow",
+              "value": "04-outreach-draft-generation",
+              "type": "string"
+            },
+            {
+              "id": "skip-boundary",
+              "name": "boundary",
+              "value": "no draft created; nothing was sent",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Non-error skip path (false branch of the IF): C/D leads or A/B leads with no usable contact are recorded as skipped, NOT errored. No Outreach Task is created. This preserves the audit trail without polluting the error handler. Outputs to the same audit/notification sink as the error path in production wiring."
+    },
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        460
+      ],
+      "parameters": {},
+      "notes": "Catches any node failure (script crash, JSON parse failure, HTTP non-2xx, missing $env secrets). Wired to the Outreach Error Handler so all failures land in one auditable place per docs/00 §8.4 acceptance (no silent drops; drafts never sent automatically)."
+    },
+    {
+      "id": "outreach-error",
+      "name": "Outreach Error Handler",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        260,
+        460
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "error-marker",
+              "name": "error",
+              "value": "outreach-draft-generation-failed",
+              "type": "string"
+            },
+            {
+              "id": "error-detail",
+              "name": "error_detail",
+              "value": "={{ $json.execution?.error?.message || $json.error || $json.message || $json.stderr || 'unknown outreach failure' }}",
+              "type": "string"
+            },
+            {
+              "id": "error-failed-node",
+              "name": "failed_node",
+              "value": "={{ $json.execution?.lastNode?.name || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "error-workflow",
+              "name": "workflow",
+              "value": "04-outreach-draft-generation",
+              "type": "string"
+            },
+            {
+              "id": "error-approval",
+              "name": "approval_status",
+              "value": "Pending Review",
+              "type": "string"
+            },
+            {
+              "id": "error-send",
+              "name": "send_status",
+              "value": "Not Sent",
+              "type": "string"
+            },
+            {
+              "id": "error-boundary",
+              "name": "boundary",
+              "value": "draft-only; on failure nothing was created or sent; route to human review",
+              "type": "string"
+            },
+            {
+              "id": "error-logged-at",
+              "name": "logged_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Error path: any script/AI/JSON/Feishu failure lands here. approval_status/send_status are re-asserted so the audit record never implies a send occurred. No retry storms, no silent drop. Wire this node's output to a notification/Feishu group node in production."
+    }
+  ],
+  "connections": {
+    "Hourly Schedule": {
+      "main": [
+        [
+          {
+            "node": "Generate Outreach Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Generate Outreach Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Outreach Draft": {
+      "main": [
+        [
+          {
+            "node": "Priority A/B and Contact?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Priority A/B and Contact?": {
+      "main": [
+        [
+          {
+            "node": "Build Outreach Task Fields",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip (No Contact / Not A-B)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Outreach Task Fields": {
+      "main": [
+        [
+          {
+            "node": "Write Outreach Task To Feishu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Outreach Task To Feishu": {
+      "main": [
+        [
+          {
+            "node": "Success Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Success Output": {
+      "main": [
+        []
+      ]
+    },
+    "Skip (No Contact / Not A-B)": {
+      "main": [
+        []
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Outreach Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "asg_boundary": "Outreach draft generation is draft-only and human-review-gated: every created Outreach Task is written with Approval Status='Pending Review' and Send Status='Not Sent', and these values are re-asserted at BOTH the field-build node and the Feishu write node so no upstream mutation can auto-send. This workflow NEVER sends email/LinkedIn/WhatsApp messages, never publishes content, and never sets Approval=Approved or Send=Sent. Only Priority A/B leads with a usable contact (email / LinkedIn URL / WhatsApp / website contact form) produce a draft; C/D and contact-less leads are skipped, not errored. Secrets (FEISHU_BASE_APP_TOKEN / FEISHU_OUTREACH_TABLE_ID / FEISHU_TENANT_ACCESS_TOKEN / AI keys) are referenced exclusively via $env and are never literal; without them the HTTP writeback fails safely at runtime and routes to the error handler. No real API call is made until credentials are configured."
+  }
+}

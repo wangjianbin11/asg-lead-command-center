@@ -1,0 +1,167 @@
+{
+  "_comment": "Authoritative 8-table schema for the ASG Lead Command Center Feishu Base. Mirrors scripts/setup_feishu_base.py TABLES and docs/02-feishu-base-schema.md. NO table ids are stored here. Feishu Bitable field-type ints: 1=Text, 2=Number, 3=SingleSelect, 4=MultiSelect, 5=DateTime, 7=Checkbox, 11=Person/User, 13=Phone, 15=URL/Link, 18=Email. Relation and other uncertain types default to 1 (Text) with a 'note' rather than guessing, per design contract A5.",
+  "_field_types": {
+    "1": "Text",
+    "2": "Number",
+    "3": "SingleSelect",
+    "4": "MultiSelect",
+    "5": "DateTime",
+    "7": "Checkbox",
+    "11": "Person",
+    "13": "Phone",
+    "15": "URL",
+    "18": "Email"
+  },
+  "tables": {
+    "lead": {
+      "name": "Lead Pool",
+      "fields": [
+        {"name": "Lead ID", "type": 1},
+        {"name": "Company / Store Name", "type": 1},
+        {"name": "Website URL", "type": 15},
+        {"name": "Platform", "type": 3},
+        {"name": "Country / Region", "type": 3},
+        {"name": "Category", "type": 1},
+        {"name": "Source Channel", "type": 3},
+        {"name": "Source URL", "type": 15},
+        {"name": "Pain Signal", "type": 4},
+        {"name": "Evidence Text", "type": 1},
+        {"name": "Estimated Stage", "type": 3},
+        {"name": "Estimated Order Volume", "type": 3},
+        {"name": "Current Supplier Guess", "type": 1},
+        {"name": "ASG Fit Score", "type": 2},
+        {"name": "Priority", "type": 3},
+        {"name": "Status", "type": 3},
+        {"name": "Owner", "type": 11},
+        {"name": "Created Time", "type": 5},
+        {"name": "Last Updated", "type": 5},
+        {"name": "Notes", "type": 1}
+      ]
+    },
+    "contact": {
+      "name": "Contact Table",
+      "fields": [
+        {"name": "Contact ID", "type": 1},
+        {"name": "Lead ID", "type": 1, "note": "Relation to Lead Pool; created as Text until live link is configured"},
+        {"name": "Name", "type": 1},
+        {"name": "Role", "type": 1},
+        {"name": "Email", "type": 18},
+        {"name": "Email Confidence", "type": 3},
+        {"name": "LinkedIn URL", "type": 15},
+        {"name": "WhatsApp", "type": 13},
+        {"name": "Facebook URL", "type": 15},
+        {"name": "Instagram URL", "type": 15},
+        {"name": "Contact Form URL", "type": 15},
+        {"name": "Preferred Channel", "type": 3},
+        {"name": "Contact Status", "type": 3},
+        {"name": "Notes", "type": 1}
+      ]
+    },
+    "score": {
+      "name": "Lead Scoring",
+      "fields": [
+        {"name": "Score ID", "type": 1},
+        {"name": "Lead ID", "type": 1, "note": "Relation to Lead Pool; created as Text until live link is configured"},
+        {"name": "Total Score", "type": 2},
+        {"name": "Sourcing Need Score", "type": 2},
+        {"name": "Fulfillment Pain Score", "type": 2},
+        {"name": "Custom Packaging Score", "type": 2},
+        {"name": "Store Maturity Score", "type": 2},
+        {"name": "Contactability Score", "type": 2},
+        {"name": "ASG Service Fit Score", "type": 2},
+        {"name": "Reasoning Summary", "type": 1},
+        {"name": "Main Pain Point", "type": 3},
+        {"name": "Recommended Offer", "type": 3},
+        {"name": "Risk", "type": 3},
+        {"name": "Review Needed", "type": 7}
+      ]
+    },
+    "outreach": {
+      "name": "Outreach Task",
+      "fields": [
+        {"name": "Task ID", "type": 1},
+        {"name": "Lead ID", "type": 1, "note": "Relation to Lead Pool; created as Text until live link is configured"},
+        {"name": "Contact ID", "type": 1, "note": "Relation to Contact Table; created as Text until live link is configured"},
+        {"name": "Owner", "type": 11},
+        {"name": "Channel", "type": 3},
+        {"name": "Message Type", "type": 3},
+        {"name": "AI Draft", "type": 1},
+        {"name": "Human Edited Version", "type": 1},
+        {"name": "Approval Status", "type": 3},
+        {"name": "Send Status", "type": 3},
+        {"name": "Send Date", "type": 5},
+        {"name": "Next Follow-up Date", "type": 5},
+        {"name": "Result", "type": 3},
+        {"name": "Notes", "type": 1}
+      ]
+    },
+    "conversation": {
+      "name": "Conversation Log",
+      "fields": [
+        {"name": "Conversation ID", "type": 1},
+        {"name": "Lead ID", "type": 1, "note": "Relation to Lead Pool; created as Text until live link is configured"},
+        {"name": "Contact ID", "type": 1, "note": "Relation to Contact Table; created as Text until live link is configured"},
+        {"name": "Channel", "type": 3},
+        {"name": "Direction", "type": 3},
+        {"name": "Message Content", "type": 1},
+        {"name": "AI Summary", "type": 1},
+        {"name": "Intent", "type": 3},
+        {"name": "Urgency", "type": 3},
+        {"name": "Next Action", "type": 1},
+        {"name": "Owner", "type": 11},
+        {"name": "Created Time", "type": 5}
+      ]
+    },
+    "content": {
+      "name": "Content Opportunity",
+      "fields": [
+        {"name": "Content ID", "type": 1},
+        {"name": "Source Lead ID", "type": 1, "note": "Relation to Lead Pool; created as Text until live link is configured"},
+        {"name": "Source Conversation ID", "type": 1, "note": "Relation to Conversation Log; created as Text until live link is configured"},
+        {"name": "Pain Point", "type": 3},
+        {"name": "Topic", "type": 1},
+        {"name": "Search Intent", "type": 3},
+        {"name": "Recommended Format", "type": 4},
+        {"name": "Draft Brief", "type": 1},
+        {"name": "Priority", "type": 3},
+        {"name": "Status", "type": 3},
+        {"name": "Owner", "type": 11}
+      ]
+    },
+    "report": {
+      "name": "Daily Report",
+      "fields": [
+        {"name": "Report Date", "type": 5},
+        {"name": "New Leads", "type": 2},
+        {"name": "A Leads", "type": 2},
+        {"name": "B Leads", "type": 2},
+        {"name": "Contacts Found", "type": 2},
+        {"name": "Outreach Drafts Generated", "type": 2},
+        {"name": "Messages Sent", "type": 2},
+        {"name": "Replies", "type": 2},
+        {"name": "Quote Requests", "type": 2},
+        {"name": "Meetings", "type": 2},
+        {"name": "Won Deals", "type": 2},
+        {"name": "Lost Deals", "type": 2},
+        {"name": "Main Findings", "type": 1},
+        {"name": "Problems", "type": 1},
+        {"name": "Tomorrow Actions", "type": 1}
+      ]
+    },
+    "prompt": {
+      "name": "Prompt Version",
+      "fields": [
+        {"name": "Prompt ID", "type": 1},
+        {"name": "Prompt Name", "type": 1},
+        {"name": "Version", "type": 1},
+        {"name": "Use Case", "type": 3},
+        {"name": "Prompt Content", "type": 1},
+        {"name": "Output Schema", "type": 1},
+        {"name": "Status", "type": 3},
+        {"name": "Owner", "type": 11},
+        {"name": "Last Updated", "type": 5},
+        {"name": "Test Result", "type": 1}
+      ]
+    }
+  }
+}

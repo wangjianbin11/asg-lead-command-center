@@ -1,0 +1,37 @@
+{
+  "_comment": "Template for local Feishu table ids. Copy this file to config/feishu_tables.local.json (which is gitignored) and fill in the real table_id values after running `python3 scripts/setup_feishu_base.py ensure` against your Feishu Base. Logical keys (lead, contact, score, outreach, conversation, content, report, prompt) match scripts/setup_feishu_base.py TABLES and config/feishu_tables.example.json. Never commit real ids.",
+  "tables": {
+    "lead": {
+      "name": "Lead Pool",
+      "table_id": ""
+    },
+    "contact": {
+      "name": "Contact Table",
+      "table_id": ""
+    },
+    "score": {
+      "name": "Lead Scoring",
+      "table_id": ""
+    },
+    "outreach": {
+      "name": "Outreach Task",
+      "table_id": ""
+    },
+    "conversation": {
+      "name": "Conversation Log",
+      "table_id": ""
+    },
+    "content": {
+      "name": "Content Opportunity",
+      "table_id": ""
+    },
+    "report": {
+      "name": "Daily Report",
+      "table_id": ""
+    },
+    "prompt": {
+      "name": "Prompt Version",
+      "table_id": ""
+    }
+  }
+}

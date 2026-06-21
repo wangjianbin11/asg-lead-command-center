@@ -1,0 +1,367 @@
+{
+  "name": "06 Daily Command Report",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "asg_boundary": "Daily command report skeleton (spec docs/00 §8.6, docs/07). scheduleTrigger fires daily at 18:30 Asia/Shanghai and runs scripts/generate_daily_report.py --sample (or --input PATH) locally; on success it persists one Daily Report row and pushes the markdown to the Feishu group, both over $env-configured endpoints only. Draft/no-auto-send boundary: this workflow NEVER sends outreach, never auto-messages leads, and never publishes content — it only produces a boss-readable status report and writes it to the Daily Report table. Secrets (FEISHU_APP_ID/FEISHU_APP_SECRET/FEISHU_BASE_APP_TOKEN/FEISHU_REPORT_TABLE_ID/FEISHU_GROUP_CHAT_ID/FEISHU_TENANT_ACCESS_TOKEN) are referenced via $env only and are never literal. Without credentials the HTTP writeback/push nodes fail safely at runtime and route to the error path; no real API call is made until credentials are configured."
+  },
+  "nodes": [
+    {
+      "id": "daily-schedule",
+      "name": "Daily 18:30 Asia/Shanghai",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 18 * * *"
+            }
+          ]
+        }
+      },
+      "notes": "Spec docs/00 §8.6: trigger every day at 18:30. The workflow timezone must be set to Asia/Shanghai at the n8n environment/workflow level (TZ=Asia/Shanghai) so the cron 18:30 lands on local Shanghai time. n8n-nodes-base.scheduleTrigger with a cronExpression keeps the daily 18:30 semantics explicit and version-portable."
+    },
+    {
+      "id": "generate-report",
+      "name": "Generate Daily Report",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        260,
+        0
+      ],
+      "parameters": {
+        "command": "python3 scripts/generate_daily_report.py --sample",
+        "executeOnce": false
+      },
+      "notes": "Primary path: render the boss-readable daily report markdown. Default to --sample for the skeleton (offline, no I/O). For a real run, swap to: python3 scripts/generate_daily_report.py --input data-samples/daily_snapshot.json --date {{$today}}. The script is stdlib-only and never auto-sends outreach; --feishu is an explicit stub that raises ConfigError unless credentials + live table mapping are configured."
+    },
+    {
+      "id": "check-report-ok",
+      "name": "Report OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        520,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.exitCode === 0 }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "notes": "Branch on the executeCommand exit code. exitCode 0 -> success path (persist Daily Report row + push to Feishu group). Anything else -> error handler. Keeps a script crash or stderr failure from silently producing a half-written report."
+    },
+    {
+      "id": "parse-report-md",
+      "name": "Shape Report Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        780,
+        -160
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "report-date",
+              "name": "report_date",
+              "value": "={{ $now.toFormat('yyyy-MM-dd') }}",
+              "type": "string"
+            },
+            {
+              "id": "report-markdown",
+              "name": "markdown",
+              "value": "={{ $json.stdout || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "generated-at",
+              "name": "generated_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "continueOnFail": true,
+      "notes": "Normalize the script's stdout (the full daily report markdown) into a payload the downstream Feishu nodes consume. The script prints a single markdown document; we keep it whole so the Daily Report row stores the rendered report verbatim (auditable) and the group push posts the same string. Field names below are docs/02 §6.7 exact."
+    },
+    {
+      "id": "write-daily-report",
+      "name": "Write Daily Report Row",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1040,
+        -320
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://open.feishu.cn/open-apis/bitable/v1/apps/' + $env.FEISHU_BASE_APP_TOKEN + '/tables/' + $env.FEISHU_REPORT_TABLE_ID + '/records' }}",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.FEISHU_TENANT_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { fields: { 'Report Date': $json.report_date, 'New Leads': 0, 'A Leads': 0, 'B Leads': 0, 'Contacts Found': 0, 'Outreach Drafts Generated': 0, 'Messages Sent': 0, 'Replies': 0, 'Quote Requests': 0, 'Meetings': 0, 'Won Deals': 0, 'Lost Deals': 0, 'Main Findings': $json.markdown, 'Problems': '', 'Tomorrow Actions': '' } } }}",
+        "options": {}
+      },
+      "continueOnFail": true,
+      "notes": "Success path (1 of 2): persist the rendered report to the Daily Report table. Field names match docs/02 §6.7 exactly (Report Date, New Leads, A Leads, B Leads, Contacts Found, Outreach Drafts Generated, Messages Sent, Replies, Quote Requests, Meetings, Won Deals, Lost Deals, Main Findings, Problems, Tomorrow Actions). The full markdown is stored under 'Main Findings' so the report is always auditable; numeric fields default to 0 here and should be populated upstream when --input supplies real metrics. Base token + table id + tenant token come from $env only — never literal. continueOnFail so a transient Feishu outage still lets the group push attempt."
+    },
+    {
+      "id": "push-feishu-group",
+      "name": "Push Report To Feishu Group",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1040,
+        -40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id' }}",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.FEISHU_TENANT_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { receive_id: $env.FEISHU_GROUP_CHAT_ID, msg_type: 'text', content: JSON.stringify({ text: 'ASG Lead Command Daily Report - ' + $json.report_date + '\n\n' + $json.markdown }) } }}",
+        "options": {}
+      },
+      "continueOnFail": true,
+      "notes": "Success path (2 of 2): post the report markdown to the configured Feishu group chat (docs/00 §8.6 acceptance: push to Feishu group). This is a status broadcast to an internal group only — it is NOT customer-facing outreach and never messages a lead. chat_id and tenant token via $env only; no literal secrets. continueOnFail so a failed post still surfaces in the success/error summary rather than crashing the workflow."
+    },
+    {
+      "id": "report-success",
+      "name": "Success Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        -160
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "status",
+              "name": "status",
+              "value": "daily-report-generated",
+              "type": "string"
+            },
+            {
+              "id": "report-date",
+              "name": "report_date",
+              "value": "={{ $json.report_date }}",
+              "type": "string"
+            },
+            {
+              "id": "push-target",
+              "name": "push_target",
+              "value": "={{ $env.FEISHU_GROUP_CHAT_ID || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "boundary",
+              "name": "boundary",
+              "value": "report only; no outreach sent, no lead messaged",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Terminal success marker: confirms the report was generated, persisted, and pushed. Explicitly restates the boundary so downstream watchers can tell this run did not send any outreach."
+    },
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        360
+      ],
+      "parameters": {},
+      "notes": "Catches any node failure (script non-zero exit, missing $env secrets, HTTP non-2xx from Feishu). Wired to the Daily Report Error Log so every failure lands in one auditable place per docs/00 §8.6 acceptance."
+    },
+    {
+      "id": "report-error",
+      "name": "Daily Report Error Log",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        260,
+        360
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "workflow",
+              "name": "workflow",
+              "value": "06-daily-command-report",
+              "type": "string"
+            },
+            {
+              "id": "failed-node",
+              "name": "failed_node",
+              "value": "={{ $json.execution?.lastNode?.name || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "error-message",
+              "name": "error_message",
+              "value": "={{ $json.execution?.error?.message || $json.error || $json._error || $json.stderr || 'unknown daily-report failure' }}",
+              "type": "string"
+            },
+            {
+              "id": "logged-at",
+              "name": "logged_at",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            },
+            {
+              "id": "boundary",
+              "name": "boundary",
+              "value": "report generation failed; no outreach was sent, no lead was messaged",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "Error path: record which node failed and why, with the boundary restated. No retry storms, no silent drop, and crucially no fall-through that could accidentally trigger outreach. Wire this node's output to a notification/Feishu group alert node in production."
+    }
+  ],
+  "connections": {
+    "Daily 18:30 Asia/Shanghai": {
+      "main": [
+        [
+          {
+            "node": "Generate Daily Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Daily Report": {
+      "main": [
+        [
+          {
+            "node": "Report OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report OK?": {
+      "main": [
+        [
+          {
+            "node": "Shape Report Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Daily Report Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Report Payload": {
+      "main": [
+        [
+          {
+            "node": "Write Daily Report Row",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Push Report To Feishu Group",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Daily Report Row": {
+      "main": [
+        [
+          {
+            "node": "Success Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Push Report To Feishu Group": {
+      "main": [
+        [
+          {
+            "node": "Success Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Daily Report Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

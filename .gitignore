@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.pytest_cache/
+logs/
+output/
+tmp/
+
+# Local Feishu config holds real table ids after `setup_feishu_base.py ensure`.
+# Keep committed templates: *.example.json and *.local.json.example are NOT ignored
+# because the pattern ends in .local.json (the .example suffix escapes the match).
+config/*.local.json
+

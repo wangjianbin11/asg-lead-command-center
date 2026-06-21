@@ -1,0 +1,4 @@
+contact_id,lead_id,name,role,email,email_confidence,preferred_channel,contact_status
+CONT-20260621-0001,LEAD-20260621-0001,Alex,Operations,ops@northstarsocks.example,Medium,Email,Need Manual Check
+CONT-20260621-0002,LEAD-20260621-0002,Sam,Founder,hello@urbanpetgear.example,Medium,Email,Need Manual Check
+
