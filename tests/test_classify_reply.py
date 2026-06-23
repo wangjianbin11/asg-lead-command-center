@@ -245,6 +245,146 @@ class ClassifyReplyDispatchTests(unittest.TestCase):
         self.assertFalse(result["should_follow_up"])
 
 
+class BuildConversationFieldsTests(unittest.TestCase):
+    """build_conversation_fields maps the snake_case classification payload to
+    the docs/02 §6.5 Conversation Log PascalCase fields exactly."""
+
+    def _classification(self):
+        return {
+            "intent": "Quote Request",
+            "urgency": "High",
+            "summary": "Customer wants pricing.",
+            "customer_need": "Pricing details",
+            "recommended_next_action": "Send a tailored quote.",
+            "suggested_reply": "Draft reply.",
+            "should_follow_up": True,
+            "next_followup_days": 3,
+        }
+
+    def test_maps_summary_to_ai_summary(self):
+        # docs/02 §6.5 field is "AI Summary", sourced from "summary".
+        fields = cr.build_conversation_fields(self._classification())
+        self.assertEqual(fields["AI Summary"], "Customer wants pricing.")
+
+    def test_maps_recommended_next_action_to_next_action(self):
+        # Use a no-follow-up classification so Next Action carries the action
+        # verbatim (a follow-up True would append a cadence hint — tested
+        # separately below).
+        classification = self._classification()
+        classification["should_follow_up"] = False
+        fields = cr.build_conversation_fields(classification)
+        self.assertEqual(fields["Next Action"], "Send a tailored quote.")
+
+    def test_intent_and_urgency_present(self):
+        fields = cr.build_conversation_fields(self._classification())
+        self.assertEqual(fields["Intent"], "Quote Request")
+        self.assertEqual(fields["Urgency"], "High")
+
+    def test_context_fields_propagate(self):
+        fields = cr.build_conversation_fields(
+            self._classification(),
+            lead_id="LEAD-1",
+            conversation_id="CONV-1",
+            channel="Email",
+            direction="Inbound",
+            message_content="Can I get a quote?",
+            owner="alice",
+        )
+        self.assertEqual(fields["Conversation ID"], "CONV-1")
+        self.assertEqual(fields["Lead ID"], "LEAD-1")
+        self.assertEqual(fields["Channel"], "Email")
+        self.assertEqual(fields["Direction"], "Inbound")
+        self.assertEqual(fields["Message Content"], "Can I get a quote?")
+        self.assertEqual(fields["Owner"], "alice")
+
+    def test_contact_id_defaults_to_empty(self):
+        # docs/02 §6.5 lists Contact ID but classify_reply has no contact
+        # signal — must default to ''.
+        fields = cr.build_conversation_fields(self._classification())
+        self.assertEqual(fields.get("Contact ID"), "")
+
+    def test_follow_up_hint_appended_to_next_action(self):
+        # When should_follow_up is True the Next Action must carry a follow-up
+        # hint (e.g. "(follow-up in N days)").
+        fields = cr.build_conversation_fields(self._classification())
+        self.assertIn("Send a tailored quote.", fields["Next Action"])
+        self.assertIn("follow-up", fields["Next Action"].lower())
+        self.assertIn("3", fields["Next Action"])
+
+    def test_no_follow_up_hint_when_false(self):
+        classification = self._classification()
+        classification["should_follow_up"] = False
+        fields = cr.build_conversation_fields(classification)
+        self.assertEqual(fields["Next Action"], "Send a tailored quote.")
+
+    def test_has_created_time(self):
+        # docs/02 §6.5 requires Created Time on a Conversation Log row.
+        fields = cr.build_conversation_fields(self._classification())
+        self.assertIn("Created Time", fields)
+        self.assertTrue(fields["Created Time"])
+
+
+class WriteClassificationToFeishuTests(unittest.TestCase):
+    """write_classification_to_feishu creates one record on the conversation
+    table with cleaned fields (no network)."""
+
+    class _FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def create_record(self, table_id, fields):
+            self.calls.append((table_id, fields))
+            return {"record_id": "rec-1"}
+
+    class _FakeConfig:
+        def __init__(self):
+            self._table_id = "tblConversation"
+
+        def table_id(self, name):
+            if name != "conversation":
+                raise KeyError(name)
+            return self._table_id
+
+    def test_creates_one_record_on_conversation_table(self):
+        client = self._FakeClient()
+        cfg = self._FakeConfig()
+        report = cr.write_classification_to_feishu(
+            {
+                "intent": "Quote Request",
+                "urgency": "High",
+                "summary": "wants price",
+                "recommended_next_action": "send quote",
+                "should_follow_up": True,
+                "next_followup_days": 2,
+            },
+            client,
+            cfg,
+            lead_id="LEAD-1",
+            conversation_id="CONV-1",
+        )
+        self.assertEqual(len(client.calls), 1)
+        table_id, fields = client.calls[0]
+        self.assertEqual(table_id, "tblConversation")
+        # Fields must be cleaned (Contact ID '' is dropped, never sent).
+        self.assertNotIn("Contact ID", fields)
+        self.assertEqual(report["record_id"], "rec-1")
+
+    def test_drops_empty_values_before_write(self):
+        # An empty Channel must be dropped by _clean_fields, not sent as "".
+        client = self._FakeClient()
+        cfg = self._FakeConfig()
+        cr.write_classification_to_feishu(
+            {"intent": "Other", "urgency": "Medium"},
+            client,
+            cfg,
+        )
+        _, fields = client.calls[0]
+        self.assertNotIn("Channel", fields)
+        self.assertNotIn("Lead ID", fields)
+        self.assertEqual(fields["Intent"], "Other")
+        self.assertEqual(fields["Urgency"], "Medium")
+
+
 class CLITests(unittest.TestCase):
     """CLI --reply TEXT prints validated JSON."""
 

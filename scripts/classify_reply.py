@@ -28,6 +28,7 @@ Business rules that are not obvious from the code:
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import sys
 from typing import Any, Dict, List, Optional
@@ -473,6 +474,97 @@ def classify_reply(
             pass
 
     return rule_based_classify(reply_text)
+
+
+# --- Feishu write path (Conversation Log table, docs/02 §6.5) ---------------
+
+
+def _clean_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop empty values before a Feishu write.
+
+    Feishu typed fields reject empty values of the wrong shape (None into a
+    Number, [] into Text, "" into Person/Link). Omitting the key leaves the
+    field empty in Feishu — same intent, no type error. False/0 are kept
+    (valid for Checkbox/Number). Mirrors run_lead_pipeline._clean_fields.
+    """
+    return {k: v for k, v in fields.items() if v not in (None, "", [], {})}
+
+
+def build_conversation_fields(
+    classification: Dict[str, Any],
+    *,
+    lead_id: str = "",
+    conversation_id: str = "",
+    channel: str = "",
+    direction: str = "",
+    message_content: str = "",
+    owner: str = "",
+) -> Dict[str, Any]:
+    """Translate a classified reply payload into a Conversation Log field dict.
+
+    Field names match docs/02 §6.5 EXACTLY so the dict is directly writable to
+    Feishu Bitable. The classification payload uses snake_case keys (the shape
+    emitted by ``validate_reply_output``); this maps them onto the PascalCase
+    Conversation Log fields:
+
+      * ``summary``             -> ``AI Summary``
+      * ``intent``              -> ``Intent``
+      * ``urgency``             -> ``Urgency``
+      * ``recommended_next_action`` -> ``Next Action``
+      * context kwargs          -> Conversation ID / Lead ID / Contact ID ('') /
+                                    Channel / Direction / Message Content / Owner /
+                                    Created Time
+
+    Business rule (docs/02 §6.5): when the classification says to keep the
+    follow-up cadence (``should_follow_up`` True), a short hint is appended to
+    ``Next Action`` (`` (follow-up in N days)``) so the salesperson sees the
+    recommended cadence inline.
+    """
+    next_action = _coerce_str(classification.get("recommended_next_action"))
+    if _coerce_bool(classification.get("should_follow_up"), default=False):
+        days = _coerce_int(
+            classification.get("next_followup_days"), default=0, minimum=0
+        )
+        next_action = "%s (follow-up in %d days)" % (next_action, days)
+
+    return {
+        "Conversation ID": _coerce_str(conversation_id),
+        "Lead ID": _coerce_str(lead_id),
+        "Contact ID": "",
+        "Channel": _coerce_str(channel),
+        "Direction": _coerce_str(direction),
+        "Message Content": _coerce_str(message_content),
+        "AI Summary": _coerce_str(classification.get("summary")),
+        "Intent": _coerce_str(classification.get("intent")) or "Other",
+        "Urgency": _coerce_str(classification.get("urgency")) or "Medium",
+        "Next Action": next_action,
+        "Owner": _coerce_str(owner),
+        "Created Time": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def write_classification_to_feishu(
+    classification: Dict[str, Any],
+    client: Any,
+    cfg: Any,
+    **ctx: Any,
+) -> Dict[str, Any]:
+    """Create one Conversation Log record from a classified reply.
+
+    Builds the docs/02 §6.5 field dict via ``build_conversation_fields``,
+    drops empty values (``_clean_fields``), and calls
+    ``client.create_record(cfg.table_id("conversation"), fields)``. Returns the
+    created record id (``{"record_id": ...}``) so callers can link / log it.
+
+    ``ctx`` is forwarded verbatim to ``build_conversation_fields`` so callers
+    pass ``lead_id=``, ``conversation_id=``, ``channel=`` etc. as keyword args.
+    """
+    table_id = cfg.table_id("conversation")
+    fields = _clean_fields(
+        build_conversation_fields(classification, **ctx)
+    )
+    created = client.create_record(table_id, fields)
+    return {"record_id": str((created or {}).get("record_id") or "")}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
