@@ -140,8 +140,9 @@ class LeadToLeadPoolFieldsTests(unittest.TestCase):
         self.assertEqual(fields["Source Channel"], "Crawler")
         self.assertEqual(fields["Source URL"], "https://demobrand.com/products.json")
         self.assertEqual(fields["Status"], "New")
-        # Pain Signal is the list of detected pains.
-        self.assertEqual(fields["Pain Signal"], ["shipping", "packaging"])
+        # Pain Signal is JOINED into a string: the live LeadCC·Lead Pool field is
+        # Multiline Text (not MultiSelect), so a list is rejected by Feishu.
+        self.assertEqual(fields["Pain Signal"], "shipping, packaging")
         # Email is mirrored onto Notes / Evidence for outreach routing.
         self.assertIn("hello@demobrand.com", fields.get("Notes", ""))
 

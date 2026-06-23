@@ -486,7 +486,9 @@ def lead_to_leadpool_fields(lead: Dict[str, Any], lead_id: str) -> Dict[str, Any
 
     Field names mirror ``run_lead_pipeline._build_lead_pool_fields`` EXACTLY so
     the dict is directly writable to Feishu Bitable (docs/02 §6.1 contract).
-    Status='New', Source Channel='Crawler', Pain Signal=list of detected pains.
+    Status='New', Source Channel='Crawler'. Pain Signal is JOINED into a string
+    because the live LeadCC·Lead Pool field is Multiline Text (not MultiSelect),
+    discovered via live write (a list is rejected with TextFieldConvFail).
     """
     website = lead.get("website_url", "")
     pains = list(lead.get("pain_signals") or [])
@@ -505,7 +507,7 @@ def lead_to_leadpool_fields(lead: Dict[str, Any], lead_id: str) -> Dict[str, Any
         "Category": lead.get("category", ""),
         "Source Channel": "Crawler",
         "Source URL": lead.get("source_url", ""),
-        "Pain Signal": pains,
+        "Pain Signal": ", ".join(pains),
         "Evidence Text": notes,
         "Estimated Stage": "Unknown",
         "Estimated Order Volume": "Unknown",
